@@ -3,6 +3,6 @@ instaloader==4.14.1
 chromadb==0.5.23
 sentence-transformers==3.4.1
 streamlit==1.41.1
-ollama==0.4.7
+openai==1.68.0
 python-dotenv==1.0.1
 torch==2.5.1

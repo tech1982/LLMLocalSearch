@@ -14,8 +14,8 @@ Searches by **meaning and context**, not keywords. Supports 🇺🇦 🇷🇺 �
 │ (Instaloader)│     └───────┬──────────┘            │
 └──────────────┘             │                       ▼
                       Semantic search         ┌──────────────┐
-                      (cosine similarity) ───▶│  Ollama      │
-                                              │  (qwen3:8b)  │
+                      (cosine similarity) ───▶│  Azure OpenAI │
+                                              │  (gpt-4.1-mini)│
                                               │  RAG answer  │
                                               └──────────────┘
 ```
@@ -26,9 +26,7 @@ Searches by **meaning and context**, not keywords. Supports 🇺🇦 🇷🇺 �
 |-------|-----|
 | Idle (Streamlit + ChromaDB) | ~200 MB |
 | During search (embedding model loads) | ~1.5 GB |
-| With Ollama answer generation | +3–4 GB (temporary) |
-
-Ollama can be stopped entirely (`brew services stop ollama`) — search still works, you just see raw results without a synthesized answer.
+| With Azure OpenAI answer generation | negligible (cloud API call) |
 
 ---
 
@@ -97,13 +95,10 @@ cd LLMLocalSearch
 # 2. Create .env from template
 cp .env.example .env
 
-# 3. Edit .env — paste your Telegram API keys
+# 3. Edit .env — paste your Telegram API keys and Azure OpenAI key
 nano .env
 
-# 4. Start Ollama (if not already running)
-brew services start ollama
-
-# 5. Run — creates venv, installs deps on first launch, then starts the app
+# 4. Run — creates venv, installs deps on first launch, then starts the app
 chmod +x run.sh
 ./run.sh
 ```
@@ -155,21 +150,10 @@ python src/ingest_telegram.py
 source .venv/bin/activate
 python src/ingest_instagram.py
 
-# Ollama status
-brew services info ollama
-ollama list
-
-# Stop Ollama
-brew services stop ollama
-
 # Force re-index from scratch
 rm -rf data/chromadb/
 source .venv/bin/activate
 python src/ingest_telegram.py
-
-# Switch Ollama model
-ollama pull mistral
-# then change OLLAMA_MODEL in .env — no restart needed, picked up on next query
 ```
 
 ---
@@ -180,10 +164,8 @@ ollama pull mistral
 |-----------|------|
 | First indexing of 10,000 messages | ~5–10 min |
 | Search query | 1–3 sec |
-| Ollama answer generation | 5–15 sec |
+| Azure OpenAI answer generation | 2–5 sec |
 
 - The embedding model is cached in `data/model_cache/` — first run downloads ~470 MB
-- Ollama models are stored in `~/.ollama/models/` (~5.2 GB for qwen3:8b)
-- If RAM is tight, stop Ollama (`brew services stop ollama`) and toggle off answer generation in the sidebar
 - Python dependencies live in `.venv/` — `rm -rf .venv` removes them cleanly
 - See [UNINSTALL.md](UNINSTALL.md) for full cleanup instructions

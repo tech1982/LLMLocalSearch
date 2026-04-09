@@ -37,7 +37,7 @@ with st.sidebar:
 
     n_results = st.slider("Number of results", 3, 20, 7)
 
-    use_llm = st.toggle("🤖 Generate answer (Ollama)", value=True)
+    use_llm = st.toggle("🤖 Generate answer (Azure OpenAI)", value=True)
 
     answer_lang = st.selectbox(
         "Answer language",
@@ -79,7 +79,7 @@ if query:
     else:
         # LLM Answer
         if use_llm:
-            with st.spinner("🤖 Generating answer..."):
+            with st.spinner("🤖 Generating answer via Azure OpenAI..."):
                 answer = generate_answer(query, results, language=answer_lang)
             st.markdown("### 💡 Answer")
             st.markdown(answer)

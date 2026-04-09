@@ -1,19 +1,21 @@
 """
-Semantic search engine: embeddings + ChromaDB + Ollama RAG
+Semantic search engine: embeddings + ChromaDB + Azure OpenAI RAG
 """
 from __future__ import annotations
 import os
 import chromadb
 from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
-import ollama as ollama_client
+from openai import AzureOpenAI
 from datetime import datetime
 
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 DATA_DIR = os.environ.get("DATA_DIR", os.path.join(_PROJECT_ROOT, "data"))
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "intfloat/multilingual-e5-small")
-OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:8b")
+AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
+AZURE_OPENAI_KEY = os.environ.get("AZURE_OPENAI_KEY", "")
+AZURE_OPENAI_DEPLOYMENT = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4-1-mini")
+AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
 
 _model = None
 
@@ -157,9 +159,12 @@ def search(
 
 
 def generate_answer(query: str, results: list[dict], language: str = "en") -> str:
-    """Use Ollama to synthesize an answer from search results (RAG)."""
+    """Use Azure OpenAI to synthesize an answer from search results (RAG)."""
     if not results:
         return "No matches found for your query."
+
+    if not AZURE_OPENAI_ENDPOINT or not AZURE_OPENAI_KEY:
+        return "⚠️ Azure OpenAI is not configured. Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_KEY in .env"
 
     context_parts = []
     for i, r in enumerate(results[:7], 1):
@@ -187,15 +192,20 @@ QUESTION: {query}
 ANSWER:"""
 
     try:
-        client = ollama_client.Client(host=OLLAMA_HOST)
-        response = client.chat(
-            model=OLLAMA_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            options={"temperature": 0.3, "num_ctx": 4096}
+        client = AzureOpenAI(
+            azure_endpoint=AZURE_OPENAI_ENDPOINT,
+            api_key=AZURE_OPENAI_KEY,
+            api_version=AZURE_OPENAI_API_VERSION,
         )
-        return response["message"]["content"]
+        response = client.chat.completions.create(
+            model=AZURE_OPENAI_DEPLOYMENT,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=2048,
+        )
+        return response.choices[0].message.content
     except Exception as e:
-        return f"⚠️ Ollama is unavailable ({e}). The relevant search results are shown above."
+        return f"⚠️ Azure OpenAI error: {e}"
 
 
 def get_stats() -> dict:
