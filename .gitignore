@@ -1,0 +1,9 @@
+# Project-specific
+.env
+data/
+sessions/
+ollama_models/
+__pycache__/
+.DS_Store
+*.session
+*.session-journal
