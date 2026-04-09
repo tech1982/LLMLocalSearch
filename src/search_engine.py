@@ -109,6 +109,7 @@ def search(
     query: str,
     n_results: int = 10,
     source_filter: str | None = None,
+    channel_filter: str | None = None,
     collection_name: str = "messages"
 ) -> list[dict]:
     """Semantic search through indexed messages."""
@@ -122,6 +123,12 @@ def search(
     where_filter = None
     if source_filter and source_filter != "all":
         where_filter = {"source": source_filter}
+    if channel_filter:
+        channel_cond = {"channel": channel_filter}
+        if where_filter:
+            where_filter = {"$and": [where_filter, channel_cond]}
+        else:
+            where_filter = channel_cond
 
     results = collection.query(
         query_embeddings=[query_embedding],
@@ -216,3 +223,17 @@ def get_stats() -> dict:
         except Exception:
             pass
     return stats
+
+
+def get_channels() -> list[str]:
+    """Get list of unique channel names from indexed data."""
+    collection = get_or_create_collection()
+    total = collection.count()
+    if total == 0:
+        return []
+    try:
+        sample = collection.get(limit=min(total, 5000), include=["metadatas"])
+        channels = sorted(set(m.get("channel", "") for m in sample["metadatas"] if m.get("channel")))
+        return channels
+    except Exception:
+        return []

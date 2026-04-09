@@ -6,7 +6,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(__file__))
 
-from search_engine import search, generate_answer, get_stats
+from search_engine import search, generate_answer, get_stats, get_channels
 
 st.set_page_config(
     page_title="🔍 TG & Insta Search",
@@ -25,6 +25,14 @@ with st.sidebar:
         "Source",
         ["all", "telegram", "instagram"],
         format_func=lambda x: {"all": "🌐 All sources", "telegram": "📱 Telegram", "instagram": "📸 Instagram"}[x]
+    )
+
+    channels = get_channels()
+    channel_options = ["all"] + channels
+    channel = st.selectbox(
+        "Channel",
+        channel_options,
+        format_func=lambda x: "📡 All channels" if x == "all" else x
     )
 
     n_results = st.slider("Number of results", 3, 20, 7)
@@ -47,8 +55,8 @@ with st.sidebar:
 
     st.divider()
     st.caption("To index new data:")
-    st.code("docker exec -it semantic-search \\\n  python src/ingest_telegram.py", language="bash")
-    st.code("docker exec -it semantic-search \\\n  python src/ingest_instagram.py", language="bash")
+    st.code("source .venv/bin/activate\npython src/ingest_telegram.py", language="bash")
+    st.code("source .venv/bin/activate\npython src/ingest_instagram.py", language="bash")
 
 # Main search interface
 query = st.text_input(
@@ -62,7 +70,8 @@ if query:
         results = search(
             query=query,
             n_results=n_results,
-            source_filter=source if source != "all" else None
+            source_filter=source if source != "all" else None,
+            channel_filter=channel if channel != "all" else None
         )
 
     if not results:

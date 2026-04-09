@@ -124,7 +124,7 @@ def main():
             sys.exit(1)
         print(f"Will index {len(accounts)} accounts")
 
-    sys.path.insert(0, "/app/src")
+    sys.path.insert(0, os.path.join(_PROJECT_ROOT, "src"))
     from search_engine import add_documents
 
     for i, account in enumerate(accounts, 1):

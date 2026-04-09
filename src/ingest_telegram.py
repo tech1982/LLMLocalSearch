@@ -1,9 +1,11 @@
 """
 Telegram message ingestion via Telethon.
 Supports channels, groups, supergroups with forum topics.
+Tracks last message ID per channel for incremental fetching.
 """
 import os
 import sys
+import json
 import asyncio
 from datetime import datetime, timezone
 from dotenv import load_dotenv
@@ -23,6 +25,23 @@ CHANNELS = [c.strip() for c in os.environ.get("TG_CHANNELS", "").split(",") if c
 MAX_MESSAGES = int(os.environ.get("MAX_MESSAGES_PER_CHANNEL", 10000))
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 SESSION_DIR = os.environ.get("SESSION_DIR", os.path.join(_PROJECT_ROOT, "sessions"))
+DATA_DIR = os.environ.get("DATA_DIR", os.path.join(_PROJECT_ROOT, "data"))
+STATE_FILE = os.path.join(DATA_DIR, "ingest_state.json")
+
+
+def load_state():
+    """Load last-indexed message IDs per channel."""
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+
+def save_state(state):
+    """Save last-indexed message IDs per channel."""
+    os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f, indent=2)
 
 
 async def get_forum_topics(client, channel_entity) -> dict:
@@ -44,18 +63,21 @@ async def get_forum_topics(client, channel_entity) -> dict:
     return topics
 
 
-async def ingest_channel(client, channel_name: str) -> tuple[list, list, list]:
-    """Pull messages from a Telegram channel/group."""
+async def ingest_channel(client, channel_name: str, min_id: int = 0) -> tuple:
+    """Pull messages from a Telegram channel/group, starting after min_id."""
     texts, metadatas, ids = [], [], []
+    max_seen_id = min_id
 
     try:
         entity = await client.get_entity(channel_name)
     except Exception as e:
         print(f"  ❌ Cannot find '{channel_name}': {e}")
-        return texts, metadatas, ids
+        return texts, metadatas, ids, max_seen_id
 
     channel_title = getattr(entity, "title", channel_name)
     print(f"  📡 Channel: {channel_title} (id: {entity.id})")
+    if min_id > 0:
+        print(f"  ⏩ Fetching messages after ID {min_id} (incremental)")
 
     # Check if it's a forum/topics group
     is_forum = getattr(entity, "forum", False)
@@ -65,7 +87,8 @@ async def ingest_channel(client, channel_name: str) -> tuple[list, list, list]:
         print(f"  📂 Forum with {len(topics)} topics: {list(topics.values())[:5]}...")
 
     count = 0
-    async for message in client.iter_messages(entity, limit=MAX_MESSAGES):
+    async for message in client.iter_messages(entity, limit=MAX_MESSAGES, min_id=min_id):
+        max_seen_id = max(max_seen_id, message.id)
         # Skip service messages (joins, pins, etc.)
         if isinstance(message, MessageService):
             continue
@@ -116,7 +139,7 @@ async def ingest_channel(client, channel_name: str) -> tuple[list, list, list]:
             print(f"    Collected {count} messages...")
 
     print(f"  ✅ Collected {count} messages from {channel_title}")
-    return texts, metadatas, ids
+    return texts, metadatas, ids, max_seen_id
 
 
 async def main():
@@ -136,15 +159,24 @@ async def main():
     print(f"✅ Connected to Telegram as {(await client.get_me()).first_name}")
 
     # Import search engine
-    sys.path.insert(0, "/app/src")
+    sys.path.insert(0, os.path.join(_PROJECT_ROOT, "src"))
     from search_engine import add_documents
+
+    state = load_state()
 
     for channel in CHANNELS:
         print(f"\n🔄 Processing: {channel}")
-        texts, metadatas, ids = await ingest_channel(client, channel)
+        channel_key = str(channel).strip()
+        min_id = state.get(channel_key, {}).get("last_message_id", 0)
+        texts, metadatas, ids, max_seen_id = await ingest_channel(client, channel, min_id=min_id)
         if texts:
             added = add_documents(texts, metadatas, ids)
             print(f"  📊 Indexed {added} new messages")
+        else:
+            print(f"  ✅ No new messages")
+        if max_seen_id > min_id:
+            state[channel_key] = {"last_message_id": max_seen_id}
+            save_state(state)
 
     await client.disconnect()
     print("\n🎉 Telegram ingestion complete!")
