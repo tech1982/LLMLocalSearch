@@ -90,24 +90,33 @@ Uses **Instaloader** which logs in with a real Instagram account and pulls post 
 ## 🚀 Quick start
 
 ```bash
-# 1. Unzip and enter the project
-cd tg-insta-search
+# 1. Enter the project
+cd LLMLocalSearch
 
-# 2. Run setup — creates .env from template on first run
-chmod +x setup.sh
-./setup.sh
+# 2. Create .env from template
+cp .env.example .env
 
 # 3. Edit .env — paste your Telegram API keys
 nano .env
 
-# 4. Run setup again — builds containers, pulls Ollama model
-./setup.sh
+# 4. Install and start Ollama natively (uses Apple Metal GPU)
+brew install ollama
+brew services start ollama
+ollama pull gemma3:4b
 
-# 5. Index Telegram (first run will ask for a verification code via Telegram)
+# 5. Create data directories and build containers
+mkdir -p data sessions ollama_models
+docker compose build
+docker compose up -d app
+
+# 6. Index Telegram (first run will ask for a verification code via Telegram)
 docker exec -it semantic-search python src/ingest_telegram.py
 
-# 6. Open http://localhost:8501 and search!
+# 7. Open http://localhost:8501 and search!
 ```
+
+> **Note:** Ollama runs natively on macOS (not in Docker) for full Apple Silicon GPU acceleration.
+> The app container connects to it via `host.docker.internal:11434`.
 
 ### (Optional) Enable auto-sync
 
@@ -147,15 +156,18 @@ docker compose ps
 
 # Logs
 docker compose logs -f app
-docker compose logs -f ollama
 
-# Restart everything
-docker compose restart
+# Ollama status (runs natively, not in Docker)
+brew services info ollama
+ollama list
+
+# Restart app container
+docker compose restart app
 
 # Stop (preserves data)
 docker compose down
 
-# Full wipe (deletes all indexed data + models)
+# Full wipe (deletes all indexed data)
 docker compose down -v
 rm -rf data/ sessions/ ollama_models/
 
@@ -164,8 +176,8 @@ rm -rf data/chromadb/
 docker exec -it semantic-search python src/ingest_telegram.py
 
 # Switch Ollama model
-docker exec ollama-search ollama pull mistral
-# then change OLLAMA_MODEL in .env and restart
+ollama pull mistral
+# then change OLLAMA_MODEL in .env and restart: docker compose restart app
 ```
 
 ---
@@ -179,6 +191,7 @@ docker exec ollama-search ollama pull mistral
 | Ollama answer generation | 5–15 sec |
 
 - The embedding model is cached in `data/model_cache/` — first run downloads ~470 MB
-- The Ollama model is cached in `ollama_models/` — first run downloads ~2.5 GB
-- If RAM is tight, stop Ollama and search without answer synthesis
+- Ollama models are stored in `~/.ollama/models/` (~3.3 GB for gemma3:4b)
+- If RAM is tight, stop Ollama (`brew services stop ollama`) and search without answer synthesis
 - The `src/` directory is mounted as a volume — you can edit scripts without rebuilding
+- See [UNINSTALL.md](UNINSTALL.md) for full cleanup instructions

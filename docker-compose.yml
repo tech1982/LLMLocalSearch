@@ -10,27 +10,14 @@ services:
       - ./src:/app/src
     env_file: .env
     environment:
-      - OLLAMA_HOST=http://ollama:11434
-    depends_on:
-      - ollama
+      - OLLAMA_HOST=http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     deploy:
       resources:
         limits:
           memory: 4G
-
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ollama-search
-    ports:
-      - "11434:11434"
-    volumes:
-      - ./ollama_models:/root/.ollama
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 6G
 
   # Optional: auto-sync Telegram every 30 min
   # Start with: docker compose --profile sync up -d
