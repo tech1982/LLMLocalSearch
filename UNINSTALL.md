@@ -3,26 +3,20 @@
 ## Quick uninstall (everything)
 
 ```bash
-# 1. Stop and remove Docker containers + network
+# 1. Remove Python venv and project data
 cd /path/to/LLMLocalSearch
-docker compose down
+rm -rf .venv data/ sessions/
 
-# 2. Remove Docker image
-docker rmi llmlocalsearch-app
+# 2. Remove .env (contains your API keys)
+rm .env
 
 # 3. Stop and uninstall native Ollama + its dependencies
 brew services stop ollama
 brew uninstall ollama
 brew autoremove        # removes mlx, mlx-c, python@3.14 (~280 MB, ollama-only deps)
 
-# 4. Remove Ollama models (~3.3 GB for gemma3:4b)
+# 4. Remove Ollama models (~5.2 GB for qwen3:8b)
 rm -rf ~/.ollama
-
-# 5. Remove project data (ChromaDB index, sessions, cached embeddings)
-rm -rf data/ sessions/ ollama_models/
-
-# 6. Remove .env (contains your API keys)
-rm .env
 ```
 
 ---
@@ -44,16 +38,8 @@ The search UI will still work at http://localhost:8501 — toggle off "Generate 
 
 ```bash
 rm -rf data/chromadb/
-# Then re-run: docker exec -it semantic-search python src/ingest_telegram.py
+# Then re-run: source .venv/bin/activate && python src/ingest_telegram.py
 ```
-
-### Remove only Docker containers (keep data)
-
-```bash
-docker compose down
-```
-
-Data in `data/`, `sessions/` persists on disk. Run `docker compose up -d app` to restart.
 
 ### Remove cached embedding model (~470 MB)
 
@@ -71,19 +57,15 @@ Will re-download on next search or indexing run.
 |---|---|---|
 | Ollama binary | `$(brew --prefix)/Cellar/ollama/` | ~50 MB |
 | Ollama-only deps | mlx (~130 MB), mlx-c (~1 MB), python@3.14 (~75 MB) | ~206 MB (removed by autoremove) |
-| Ollama models | `~/.ollama/models/` | ~3.3 GB per model |
+| Ollama models | `~/.ollama/models/` | ~5.2 GB (qwen3:8b) |
 | ChromaDB index | `data/chromadb/` | varies |
 | Embedding model cache | `data/model_cache/` | ~470 MB |
 | Telegram sessions | `sessions/` | < 1 MB |
-| Docker image | `llmlocalsearch-app` | ~2 GB |
-| Old container Ollama data | `ollama_models/` | safe to delete |
+| Python venv | `.venv/` in project | ~2.5 GB |
 
 ## Verify clean removal
 
 ```bash
-# Check no containers remain
-docker ps -a | grep -E "semantic-search|ollama"
-
 # Check Ollama is gone
 which ollama        # should return nothing
 brew list ollama    # should say "not installed"

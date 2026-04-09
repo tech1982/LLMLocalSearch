@@ -3,7 +3,8 @@ Streamlit web UI for semantic search across Telegram & Instagram.
 """
 import streamlit as st
 import sys
-sys.path.insert(0, "/app/src")
+import os
+sys.path.insert(0, os.path.dirname(__file__))
 
 from search_engine import search, generate_answer, get_stats
 

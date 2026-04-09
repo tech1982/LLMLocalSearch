@@ -1,6 +1,7 @@
 """
 Semantic search engine: embeddings + ChromaDB + Ollama RAG
 """
+from __future__ import annotations
 import os
 import chromadb
 from chromadb.config import Settings
@@ -8,10 +9,11 @@ from sentence_transformers import SentenceTransformer
 import ollama as ollama_client
 from datetime import datetime
 
-DATA_DIR = os.environ.get("DATA_DIR", "/app/data")
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+DATA_DIR = os.environ.get("DATA_DIR", os.path.join(_PROJECT_ROOT, "data"))
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "intfloat/multilingual-e5-small")
-OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://ollama:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma3:4b")
+OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:8b")
 
 _model = None
 

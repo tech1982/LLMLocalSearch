@@ -15,7 +15,8 @@ INSTA_USER = os.environ.get("INSTA_USERNAME", "")
 INSTA_PASS = os.environ.get("INSTA_PASSWORD", "")
 INSTA_ACCOUNTS = [a.strip() for a in os.environ.get("INSTA_ACCOUNTS", "").split(",") if a.strip()]
 MAX_POSTS = int(os.environ.get("MAX_POSTS_PER_ACCOUNT", 200))
-SESSION_DIR = "/app/sessions"
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+SESSION_DIR = os.environ.get("SESSION_DIR", os.path.join(_PROJECT_ROOT, "sessions"))
 
 
 def login() -> instaloader.Instaloader:

@@ -3,6 +3,7 @@
 data/
 sessions/
 ollama_models/
+.venv/
 __pycache__/
 .DS_Store
 *.session

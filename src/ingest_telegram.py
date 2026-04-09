@@ -21,7 +21,8 @@ API_HASH = os.environ.get("TG_API_HASH", "")
 PHONE = os.environ.get("TG_PHONE", "")
 CHANNELS = [c.strip() for c in os.environ.get("TG_CHANNELS", "").split(",") if c.strip()]
 MAX_MESSAGES = int(os.environ.get("MAX_MESSAGES_PER_CHANNEL", 10000))
-SESSION_DIR = "/app/sessions"
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+SESSION_DIR = os.environ.get("SESSION_DIR", os.path.join(_PROJECT_ROOT, "sessions"))
 
 
 async def get_forum_topics(client, channel_entity) -> dict:
