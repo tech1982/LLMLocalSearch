@@ -232,8 +232,20 @@ def get_channels() -> list[str]:
     if total == 0:
         return []
     try:
-        sample = collection.get(limit=min(total, 5000), include=["metadatas"])
-        channels = sorted(set(m.get("channel", "") for m in sample["metadatas"] if m.get("channel")))
-        return channels
+        channels: set[str] = set()
+        batch_size = 5000
+        offset = 0
+        while offset < total:
+            batch = collection.get(
+                limit=batch_size, offset=offset, include=["metadatas"]
+            )
+            for m in batch["metadatas"]:
+                ch = m.get("channel", "")
+                if ch:
+                    channels.add(ch)
+            if len(batch["metadatas"]) < batch_size:
+                break
+            offset += batch_size
+        return sorted(channels)
     except Exception:
         return []
