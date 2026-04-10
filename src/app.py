@@ -7,9 +7,10 @@ import os
 import re
 import warnings
 warnings.filterwarnings("ignore", message=".*torch.classes.*")
+warnings.filterwarnings("ignore", message=".*urllib3.*OpenSSL.*LibreSSL.*")
 sys.path.insert(0, os.path.dirname(__file__))
 
-from search_engine import search, generate_answer, get_stats, list_channels
+from search_engine import search, generate_answer, get_stats, list_channels, DEFAULT_RESULTS
 
 
 def _load_channel_categories() -> dict[str, str]:
@@ -165,7 +166,7 @@ with st.sidebar:
         selected_channels = []
         st.info("Канали ще не проіндексовані. Запустіть скрипт індексації.")
 
-    n_results = st.slider("Кількість результатів", 3, 30, 20)
+    n_results = st.slider("Кількість результатів", 3, 50, DEFAULT_RESULTS)
 
     use_llm = st.toggle("🤖 Генерувати відповідь (Azure OpenAI)", value=True)
 
@@ -220,7 +221,7 @@ if query:
             with st.spinner("🤖 Генеруємо відповідь через Azure OpenAI..."):
                 answer = generate_answer(query, results, language=answer_lang)
             # Replace [Source N] with clickable markdown links
-            source_urls = {i: r.get("url") for i, r in enumerate(results[:12], 1)}
+            source_urls = {i: r.get("url") for i, r in enumerate(results, 1)}
             def _linkify_source(m):
                 n = int(m.group(1))
                 url = source_urls.get(n)

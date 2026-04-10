@@ -5,6 +5,8 @@ Local sentence-transformers handles embeddings. Azure OpenAI handles chat.
 """
 from __future__ import annotations
 import os
+import warnings
+warnings.filterwarnings("ignore", message=".*urllib3.*OpenSSL.*LibreSSL.*")
 from datetime import datetime
 import lancedb
 import pyarrow as pa
@@ -21,6 +23,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 # ─── Config ──────────────────────────────────────────────────────
 DATA_DIR = os.environ.get("DATA_DIR", os.path.join(_PROJECT_ROOT, "data"))
+DEFAULT_RESULTS = int(os.environ.get("DEFAULT_RESULTS", 30))
 LANCE_DB_PATH = os.path.join(DATA_DIR, "lance")
 TABLE_NAME = "messages"
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "intfloat/multilingual-e5-large-instruct")
@@ -113,23 +116,36 @@ def embed_query(query: str) -> list[float]:
 
 # ─── Indexing maintenance ────────────────────────────────────────
 def _ensure_index(table) -> None:
-    """Create an IVF-PQ index once the table is large enough."""
+    """Create IVF-PQ vector index and FTS index once the table is large enough."""
     row_count = table.count_rows()
     if row_count < INDEX_THRESHOLD:
         return
     try:
         existing = table.list_indices()
-        if existing:
-            return
+        has_vector = any(i.index_type in ("IvfPq",) for i in existing)
+        has_fts = any("FTS" in str(i.index_type) or "fts" in (i.name or "") for i in existing)
     except Exception:
-        pass
+        has_vector = False
+        has_fts = False
 
-    print(f"  Creating IVF-PQ index on {row_count:,} vectors...")
-    try:
-        table.create_index(metric="cosine", vector_column_name="vector")
-        print("  Index created.")
-    except Exception as e:
-        print(f"  ⚠️ Index creation failed (will retry next sync): {e}")
+    if not has_vector:
+        print(f"  Creating IVF-PQ index on {row_count:,} vectors...")
+        try:
+            table.create_index(metric="cosine", vector_column_name="vector")
+            print("  Index created.")
+        except Exception as e:
+            print(f"  ⚠️ Index creation failed (will retry next sync): {e}")
+
+    if not has_fts:
+        print(f"  Creating FTS index on {row_count:,} documents...")
+        try:
+            table.create_fts_index(
+                "text", replace=True,
+                stem=False, remove_stop_words=False, lower_case=True,
+            )
+            print("  FTS index created.")
+        except Exception as e:
+            print(f"  ⚠️ FTS index creation failed: {e}")
 
 
 # ─── Document operations ────────────────────────────────────────
@@ -277,13 +293,31 @@ def get_stats() -> dict:
 
 
 # ─── Search ──────────────────────────────────────────────────────
+def _ensure_fts_index(table) -> bool:
+    """Create FTS index on-demand if missing. Returns True if FTS is available."""
+    try:
+        existing = table.list_indices()
+        if any("FTS" in str(i.index_type) or "fts" in (i.name or "") for i in existing):
+            return True
+    except Exception:
+        pass
+    try:
+        table.create_fts_index(
+            "text", replace=True,
+            stem=False, remove_stop_words=False, lower_case=True,
+        )
+        return True
+    except Exception:
+        return False
+
+
 def search(
     query: str,
-    n_results: int = 10,
+    n_results: int = DEFAULT_RESULTS,
     source_filter: str | None = None,
     channel_filter: list[str] | None = None,
 ) -> list[dict]:
-    """Semantic search with optional channel filter and query expansion."""
+    """Hybrid search: vector (semantic) + FTS (keyword), fused with RRF."""
     table = get_table()
     if table.count_rows() == 0:
         return []
@@ -292,11 +326,7 @@ def search(
     expanded = _expand_query(query)
     search_query = expanded if expanded else query
 
-    query_vector = embed_query(search_query)
-    # Fetch extra results to allow re-ranking by recency
-    fetch_limit = min(n_results * 3, 100)
-    builder = table.search(query_vector).limit(fetch_limit)
-
+    # ── Build WHERE clause ──
     where_parts = []
     if source_filter:
         where_parts.append(f"source = '{source_filter.replace(chr(39), chr(39)*2)}'")
@@ -304,24 +334,57 @@ def search(
         escaped = [c.replace("'", "''") for c in channel_filter]
         in_list = ", ".join(f"'{c}'" for c in escaped)
         where_parts.append(f"channel IN ({in_list})")
+    where_clause = " AND ".join(where_parts) if where_parts else None
 
-    if where_parts:
-        builder = builder.where(" AND ".join(where_parts))
+    # ── Vector search ──
+    query_vector = embed_query(search_query)
+    fetch_limit = min(n_results * 5, 150)
+    vec_builder = table.search(query_vector).limit(fetch_limit)
+    if where_clause:
+        vec_builder = vec_builder.where(where_clause)
+    vec_results = vec_builder.to_list()
 
-    raw_results = builder.to_list()
+    # ── FTS search (keyword) ──
+    fts_results = []
+    if _ensure_fts_index(table):
+        try:
+            fts_builder = table.search(query, query_type="fts").limit(fetch_limit)
+            if where_clause:
+                fts_builder = fts_builder.where(where_clause)
+            fts_results = fts_builder.to_list()
+        except Exception:
+            pass
 
-    # Recency boost: newer messages get up to +0.05 similarity bonus
-    # This helps surface recent discussions without killing semantic relevance
+    # ── Reciprocal Rank Fusion (weighted: FTS gets 1.5× weight) ──
+    RRF_K = 60  # standard RRF constant
+    VEC_WEIGHT = 1.0
+    FTS_WEIGHT = 1.5  # boost keyword matches
+    rrf_scores: dict[str, float] = {}
+    all_results: dict[str, dict] = {}
+
+    for rank, r in enumerate(vec_results):
+        doc_id = r["id"]
+        rrf_scores[doc_id] = rrf_scores.get(doc_id, 0) + VEC_WEIGHT / (RRF_K + rank + 1)
+        all_results[doc_id] = r
+
+    for rank, r in enumerate(fts_results):
+        doc_id = r["id"]
+        rrf_scores[doc_id] = rrf_scores.get(doc_id, 0) + FTS_WEIGHT / (RRF_K + rank + 1)
+        if doc_id not in all_results:
+            all_results[doc_id] = r
+
+    # ── Recency boost on top of RRF score ──
     now = datetime.now()
-    RECENCY_BOOST_MAX = 0.05  # max bonus for today's messages
-    RECENCY_HALF_LIFE_DAYS = 30  # bonus halves every 30 days
+    RECENCY_BOOST_MAX = 0.002  # scaled for RRF scores (~0.016 range)
+    RECENCY_HALF_LIFE_DAYS = 30
+
+    # Substring match boost: if the raw query appears literally in the text
+    query_lower = query.lower()
 
     output = []
-    for r in raw_results:
-        distance = r.get("_distance", 1.0)
-        base_sim = max(0.0, 1.0 - distance)
+    for doc_id, rrf in rrf_scores.items():
+        r = all_results[doc_id]
 
-        # Calculate recency boost
         recency_boost = 0.0
         date_str = r.get("date", "")
         if date_str:
@@ -332,6 +395,18 @@ def search(
             except (ValueError, TypeError):
                 pass
 
+        # Exact substring match bonus (case-insensitive)
+        text_lower = r.get("text", "").lower()
+        exact_boost = 0.015 if query_lower in text_lower else 0.0
+
+        # Compute display similarity from vector distance if available
+        distance = r.get("_distance")
+        if distance is not None:
+            base_sim = max(0.0, 1.0 - distance)
+        else:
+            # FTS-only result: use min similarity from vector results as floor
+            base_sim = 0.85
+
         output.append({
             "text": r.get("text", ""),
             "source": r.get("source", ""),
@@ -340,11 +415,14 @@ def search(
             "author": r.get("author", ""),
             "date": r.get("date", ""),
             "url": r.get("url", ""),
-            "similarity": round(min(1.0, base_sim + recency_boost), 4),
+            "similarity": round(base_sim + recency_boost * 10, 4),  # display only
+            "_rrf": rrf + recency_boost + exact_boost,
         })
 
-    # Re-rank by boosted similarity and return top N
-    output.sort(key=lambda x: -x["similarity"])
+    output.sort(key=lambda x: -x["_rrf"])
+    # Clean up internal score
+    for o in output:
+        del o["_rrf"]
     return output[:n_results]
 
 
@@ -386,7 +464,7 @@ def generate_answer(query: str, results: list[dict], language: str = "uk") -> st
         return "No matches found for your query."
 
     context_parts = []
-    for i, r in enumerate(results[:12], 1):
+    for i, r in enumerate(results, 1):
         source_info = f"[{r['source']}] {r['channel']}"
         if r.get("topic"):
             source_info += f" → {r['topic']}"
