@@ -20,4 +20,4 @@ fi
 mkdir -p data sessions
 
 source "$VENV/bin/activate"
-exec streamlit run src/app.py
+exec streamlit run src/app.py --server.address 0.0.0.0

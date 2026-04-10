@@ -1,0 +1,13 @@
+# =============================================================================
+# Telegram channels / groups to index
+# =============================================================================
+# Rules:
+#   - One channel per line (username or numeric ID like -1001234567890)
+#   - Lines starting with # are comments
+#   - Empty lines are ignored
+#   - Inline comments after the channel name are supported (# ...)
+# =============================================================================
+
+# --- Example ---
+# my_favorite_channel   # Description
+# -1001234567890        # Private group (use numeric ID)

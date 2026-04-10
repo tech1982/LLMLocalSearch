@@ -7,9 +7,10 @@ No state file needed — LanceDB tracks the highest message_id per channel.
 import os
 import sys
 import asyncio
+from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 from telethon import TelegramClient
-from telethon.tl.types import MessageService
+from telethon.tl.types import MessageService, PeerChannel
 from telethon.tl.functions.channels import GetForumTopicsRequest
 
 load_dotenv()
@@ -17,8 +18,27 @@ load_dotenv()
 API_ID = int(os.environ.get("TG_API_ID", 0))
 API_HASH = os.environ.get("TG_API_HASH", "")
 PHONE = os.environ.get("TG_PHONE", "")
-CHANNELS = [c.strip() for c in os.environ.get("TG_CHANNELS", "").split(",") if c.strip()]
+def _load_channels() -> list[str]:
+    """Load channels from channels.txt (preferred) or TG_CHANNELS env var (fallback).
+
+    channels.txt format: one entry per line, # comments allowed, inline # comments stripped.
+    """
+    channels_file = os.path.join(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")), "channels.txt")
+    if os.path.exists(channels_file):
+        channels = []
+        with open(channels_file, encoding="utf-8") as f:
+            for line in f:
+                line = line.split("#")[0].strip()  # strip inline comments
+                if line:
+                    channels.append(line)
+        return channels
+    # Fallback: comma-separated env var
+    return [c.strip() for c in os.environ.get("TG_CHANNELS", "").split(",") if c.strip()]
+
+CHANNELS = _load_channels()
 MAX_MESSAGES = int(os.environ.get("MAX_MESSAGES_PER_CHANNEL", 0)) or None  # 0 = no limit
+# How many days back to fetch on the first run (0 = unlimited)
+_DAYS_BACK = int(os.environ.get("MAX_DAYS_BACK", 365))
 
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 SESSION_DIR = os.environ.get("SESSION_DIR", os.path.join(_PROJECT_ROOT, "sessions"))
@@ -43,7 +63,15 @@ async def ingest_channel(client, channel_name: str, min_id: int = 0):
     texts, metadatas, ids = [], [], []
 
     try:
-        entity = await client.get_entity(channel_name)
+        # Numeric IDs: convert to PeerChannel (strip -100 prefix used by Bot API)
+        if isinstance(channel_name, str) and channel_name.lstrip("-").isdigit():
+            raw_id = int(channel_name)
+            # Bot API format: -100XXXXXXXXXX → strip the -100 prefix
+            if raw_id < 0:
+                raw_id = int(str(raw_id).replace("-100", "", 1)) if str(raw_id).startswith("-100") else abs(raw_id)
+            entity = await client.get_entity(PeerChannel(raw_id))
+        else:
+            entity = await client.get_entity(channel_name)
     except Exception as e:
         print(f"  ❌ Cannot find '{channel_name}': {e}")
         return texts, metadatas, ids
@@ -62,6 +90,9 @@ async def ingest_channel(client, channel_name: str, min_id: int = 0):
     iter_kwargs = {"limit": MAX_MESSAGES}
     if min_id > 0:
         iter_kwargs["min_id"] = min_id
+    elif _DAYS_BACK > 0:
+        # First run: cap by date, not message count — always gets the newest N days
+        iter_kwargs["offset_date"] = datetime.now(timezone.utc) - timedelta(days=_DAYS_BACK)
 
     async for message in client.iter_messages(entity, **iter_kwargs):
         if isinstance(message, MessageService):
@@ -119,7 +150,14 @@ async def ingest_channel(client, channel_name: str, min_id: int = 0):
         if count % 500 == 0:
             print(f"    Collected {count} new messages...")
 
-    print(f"  ✅ {count} new messages from {channel_title}")
+    hit_limit = MAX_MESSAGES and count >= MAX_MESSAGES
+    if hit_limit and metadatas:
+        oldest_date = metadatas[-1].get("date", "unknown")
+        print(f"  ⚠️  {count} messages collected but hit MAX_MESSAGES_PER_CHANNEL={MAX_MESSAGES} limit!")
+        print(f"     Oldest message fetched: {oldest_date} — earlier messages were NOT indexed.")
+        print(f"     Set MAX_MESSAGES_PER_CHANNEL=0 in .env to remove the limit.")
+    else:
+        print(f"  ✅ {count} new messages from {channel_title}")
     return texts, metadatas, ids
 
 
