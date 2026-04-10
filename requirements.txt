@@ -1,6 +1,7 @@
 telethon==1.37.0
 instaloader==4.14.1
 lancedb>=0.17,<1.0
+pylance>=4.0
 pyarrow>=17.0
 pandas>=2.2
 sentence-transformers==3.4.1
