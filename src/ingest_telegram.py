@@ -59,7 +59,7 @@ MAX_MESSAGES = int(os.environ.get("MAX_MESSAGES_PER_CHANNEL", 0)) or None  # 0 =
 # How many days back to fetch on the first run (0 = unlimited)
 _DAYS_BACK = int(os.environ.get("MAX_DAYS_BACK", 365))
 
-FLUSH_EVERY = 50_000  # Save to DB every N messages to avoid losing progress on Ctrl+C
+FLUSH_EVERY = int(os.environ.get("FLUSH_EVERY", 10_000))  # Save to DB every N messages to avoid losing progress on Ctrl+C
 
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 SESSION_DIR = os.environ.get("SESSION_DIR", os.path.join(_PROJECT_ROOT, "sessions"))
