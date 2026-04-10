@@ -52,9 +52,9 @@ crontab -e
 - Normal sync: queries the highest stored `message_id` per channel → fetches only newer messages
 - Backfill: queries the lowest stored `message_id` per channel → fetches older messages not yet in the index
 - No state file needed — LanceDB is the source of truth
-- `MAX_DAYS_BACK` (default 5 years) caps how far back to go on first sync or backfill
+- `MAX_DAYS_BACK` (default 3 years) caps how far back to go on first sync or backfill
 - Progress is printed every 5,000 messages with `[channel N/total]`, scanned count, and `%` of channel total
-- Large ingestions flush to DB every 50,000 messages — safe to Ctrl+C without losing all progress
+- Flushes to DB every `FLUSH_EVERY` messages (default 10,000) — safe to Ctrl+C without losing progress
 
 ---
 
@@ -163,7 +163,42 @@ Fallback: if `channels.txt` doesn't exist, `TG_CHANNELS` in `.env` is used.
 
 ---
 
-## 🔧 Useful commands
+## 🧠 Search quality
+
+### Multilingual morphology
+The embedding model (`multilingual-e5-large-instruct`) natively handles Ukrainian, Russian, Polish, and English morphology. Searching for "повірка лічильника" will surface messages containing "повірці лічильника", "повірку лічильника", "перевірка лічильника" — all with >0.95 cosine similarity. No stemming config needed.
+
+### Recency boost
+Recent messages are promoted in results even when an older message is slightly more semantically similar. Boost decays exponentially with a 30-day half-life:
+
+| Message age | Boost added |
+|---|---|
+| Today | +0.050 |
+| 1 week | +0.044 |
+| 1 month | +0.025 |
+| 3 months | +0.006 |
+| 6+ months | ~0 |
+
+The search fetches 3× more candidates from the vector DB, applies the boost, then re-ranks and returns top-N.
+
+### Query expansion (abbreviation/slang handling)
+Before embedding, the query is sent to Azure OpenAI to expand abbreviations and informal terms. Examples:
+- `КП` → `КП (карта побиту, karta pobytu)`
+- `ксеф` → `ксеф (KSeF, Krajowy System e-Faktur)`
+- `ZUS` → `ZUS (Zakład Ubezpieczeń Społecznych, соціальне страхування)`
+
+This makes the expanded query match documents that spell things out in full. Falls back to the original query silently if Azure OpenAI is unavailable.
+
+---
+
+## 🖥️ Web UI
+
+- **Sidebar** groups channels by category (read from `channels.txt` headers like `# --- IT / Tech ---`)
+- Per-category **+/−** toggle for quick filtering
+- **Language selector** for the AI answer (🇺🇦 🇬🇧 🇷🇺 🇵🇱)
+- Clickable **[Source N]** links in AI answers open the original Telegram message
+
+---
 
 ```bash
 # Start the app
@@ -195,7 +230,8 @@ python src/ingest_telegram.py
 |-----------|------|
 | First indexing (1 year of history, ~10K msgs) | ~5–10 min |
 | Backfill (older messages) | depends on channel size |
-| Search query | 1–3 sec |
+| Search query (with recency boost) | 1–3 sec |
+| Azure OpenAI query expansion | +0.5 sec |
 | Azure OpenAI answer generation | 2–5 sec |
 
 - The embedding model is cached in `data/model_cache/` — first run downloads ~1.1 GB

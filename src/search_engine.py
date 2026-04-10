@@ -5,6 +5,7 @@ Local sentence-transformers handles embeddings. Azure OpenAI handles chat.
 """
 from __future__ import annotations
 import os
+from datetime import datetime
 import lancedb
 import pyarrow as pa
 from sentence_transformers import SentenceTransformer
@@ -282,13 +283,19 @@ def search(
     source_filter: str | None = None,
     channel_filter: list[str] | None = None,
 ) -> list[dict]:
-    """Semantic search with optional channel filter."""
+    """Semantic search with optional channel filter and query expansion."""
     table = get_table()
     if table.count_rows() == 0:
         return []
 
-    query_vector = embed_query(query)
-    builder = table.search(query_vector).limit(n_results)
+    # Expand query: add full forms for abbreviations/slang
+    expanded = _expand_query(query)
+    search_query = expanded if expanded else query
+
+    query_vector = embed_query(search_query)
+    # Fetch extra results to allow re-ranking by recency
+    fetch_limit = min(n_results * 3, 100)
+    builder = table.search(query_vector).limit(fetch_limit)
 
     where_parts = []
     if source_filter:
@@ -303,9 +310,28 @@ def search(
 
     raw_results = builder.to_list()
 
+    # Recency boost: newer messages get up to +0.05 similarity bonus
+    # This helps surface recent discussions without killing semantic relevance
+    now = datetime.now()
+    RECENCY_BOOST_MAX = 0.05  # max bonus for today's messages
+    RECENCY_HALF_LIFE_DAYS = 30  # bonus halves every 30 days
+
     output = []
     for r in raw_results:
         distance = r.get("_distance", 1.0)
+        base_sim = max(0.0, 1.0 - distance)
+
+        # Calculate recency boost
+        recency_boost = 0.0
+        date_str = r.get("date", "")
+        if date_str:
+            try:
+                msg_date = datetime.strptime(date_str[:16], "%Y-%m-%d %H:%M")
+                days_ago = max(0, (now - msg_date).days)
+                recency_boost = RECENCY_BOOST_MAX * (0.5 ** (days_ago / RECENCY_HALF_LIFE_DAYS))
+            except (ValueError, TypeError):
+                pass
+
         output.append({
             "text": r.get("text", ""),
             "source": r.get("source", ""),
@@ -314,19 +340,53 @@ def search(
             "author": r.get("author", ""),
             "date": r.get("date", ""),
             "url": r.get("url", ""),
-            "similarity": round(max(0.0, 1.0 - distance), 4),
+            "similarity": round(min(1.0, base_sim + recency_boost), 4),
         })
-    return output
+
+    # Re-rank by boosted similarity and return top N
+    output.sort(key=lambda x: -x["similarity"])
+    return output[:n_results]
 
 
 # ─── RAG answer generation ──────────────────────────────────────
+
+def _expand_query(query: str) -> str:
+    """Use LLM to expand abbreviations and slang in the query for better search."""
+    try:
+        client = _get_openai_client()
+    except RuntimeError:
+        return query
+    try:
+        response = client.chat.completions.create(
+            model=AZURE_OPENAI_DEPLOYMENT,
+            messages=[
+                {"role": "system", "content": (
+                    "You expand search queries by adding full forms of abbreviations, slang, "
+                    "and informal terms. Return ONLY the expanded query — no explanations.\n"
+                    "Examples:\n"
+                    "КП → КП (карта побиту, karta pobytu)\n"
+                    "ксеф → ксеф (KSeF, Krajowy System e-Faktur)\n"
+                    "ZUS → ZUS (Zakład Ubezpieczeń Społecznych, соціальне страхування)\n"
+                    "PIT → PIT (podatek dochodowy, податок на доходи)\n"
+                    "If no abbreviations found, return the query unchanged."
+                )},
+                {"role": "user", "content": query},
+            ],
+            temperature=0,
+            max_completion_tokens=200,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception:
+        return query
+
+
 def generate_answer(query: str, results: list[dict], language: str = "uk") -> str:
     """Synthesize an answer from search results using Azure OpenAI."""
     if not results:
         return "No matches found for your query."
 
     context_parts = []
-    for i, r in enumerate(results[:7], 1):
+    for i, r in enumerate(results[:12], 1):
         source_info = f"[{r['source']}] {r['channel']}"
         if r.get("topic"):
             source_info += f" → {r['topic']}"
@@ -343,9 +403,10 @@ def generate_answer(query: str, results: list[dict], language: str = "uk") -> st
 
     system_prompt = (
         f"You are a helpful assistant that answers questions based on the provided context "
-        f"from Telegram channels. Always answer in {lang_name}. Be concrete, cite sources by "
-        f"referring to '[Source N]'. If the context does not contain an answer, say so honestly. "
-        f"Include the link to the most relevant source at the end."
+        f"from Telegram channels. Always answer in {lang_name}. "
+        f"Be concrete and informative. Use bullet points or structure when it helps clarity. "
+        f"Cite sources by referring to '[Source N]'. "
+        f"If the context does not contain an answer, say so honestly."
     )
     user_prompt = f"CONTEXT:\n{context}\n\nQUESTION: {query}\n\nANSWER:"
 
@@ -358,7 +419,7 @@ def generate_answer(query: str, results: list[dict], language: str = "uk") -> st
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.3,
-            max_completion_tokens=2048,
+            max_completion_tokens=3072,
         )
         return response.choices[0].message.content
     except Exception as e:

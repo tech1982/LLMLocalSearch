@@ -220,7 +220,7 @@ if query:
             with st.spinner("🤖 Генеруємо відповідь через Azure OpenAI..."):
                 answer = generate_answer(query, results, language=answer_lang)
             # Replace [Source N] with clickable markdown links
-            source_urls = {i: r.get("url") for i, r in enumerate(results[:7], 1)}
+            source_urls = {i: r.get("url") for i, r in enumerate(results[:12], 1)}
             def _linkify_source(m):
                 n = int(m.group(1))
                 url = source_urls.get(n)
