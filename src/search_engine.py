@@ -311,6 +311,22 @@ def _ensure_fts_index(table) -> bool:
         return False
 
 
+def rebuild_fts_index() -> None:
+    """Rebuild (or create) the FTS index on the full table. Call after ingestion."""
+    table = get_table()
+    if table.count_rows() == 0:
+        return
+    print(f"  Rebuilding FTS index on {table.count_rows():,} documents...")
+    try:
+        table.create_fts_index(
+            "text", replace=True,
+            stem=False, remove_stop_words=False, lower_case=True,
+        )
+        print("  FTS index ready.")
+    except Exception as e:
+        print(f"  ⚠️ FTS index rebuild failed: {e}")
+
+
 def search(
     query: str,
     n_results: int = DEFAULT_RESULTS,

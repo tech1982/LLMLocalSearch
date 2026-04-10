@@ -314,7 +314,7 @@ async def main():
     print(f"✅ Connected to Telegram as {me.first_name}")
 
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from search_engine import add_documents, get_max_message_id_per_channel, get_min_message_id_per_channel
+    from search_engine import add_documents, get_max_message_id_per_channel, get_min_message_id_per_channel, rebuild_fts_index
 
     if args.backfill:
         print("\n📊 Backfill mode — fetching older messages...")
@@ -346,6 +346,8 @@ async def main():
 
         await client.disconnect()
         print(f"\n🎉 Backfill complete. Total older messages added: {total_new}")
+        if total_new:
+            rebuild_fts_index()
         return
 
     print("\n📊 Checking last sync state from LanceDB...")
@@ -371,6 +373,8 @@ async def main():
 
     await client.disconnect()
     print(f"\n🎉 Sync complete. Total new messages: {total_new}")
+    if total_new:
+        rebuild_fts_index()
 
 
 if __name__ == "__main__":

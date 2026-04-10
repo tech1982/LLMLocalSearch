@@ -236,12 +236,11 @@ if query:
 
         for i, r in enumerate(results, 1):
             source_emoji = "📱" if r["source"] == "telegram" else "📸"
-            similarity_pct = f"{r['similarity']*100:.1f}%"
 
             with st.expander(
-                f"{source_emoji} {r['channel']}"
+                f"#{i} {source_emoji} {r['channel']}"
                 + (f" → {r['topic']}" if r.get('topic') else "")
-                + f" | {r['date']} | 🎯 {similarity_pct}",
+                + f" | {r['date']}",
                 expanded=(i <= 3)
             ):
                 if r.get("author"):
