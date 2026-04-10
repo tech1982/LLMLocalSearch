@@ -222,6 +222,25 @@ def get_max_message_id_per_channel() -> dict[str, int]:
     return {str(k): int(v) for k, v in grouped.items() if k}
 
 
+def get_min_message_id_per_channel() -> dict[str, int]:
+    """Return the lowest stored message_id per Telegram channel.
+    Used for backfill — fetching older messages that were missed."""
+    table = get_table()
+    if table.count_rows() == 0:
+        return {}
+
+    arrow = table.to_lance().to_table(
+        columns=["channel_username", "message_id"],
+        filter="source = 'telegram'",
+    )
+    if arrow.num_rows == 0:
+        return {}
+
+    df = arrow.to_pandas()
+    grouped = df.groupby("channel_username")["message_id"].min()
+    return {str(k): int(v) for k, v in grouped.items() if k}
+
+
 def list_channels() -> list[dict]:
     """All unique channels with message counts (for UI multiselect)."""
     table = get_table()

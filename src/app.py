@@ -72,8 +72,11 @@ with st.sidebar:
     st.metric("📄 Всього документів", stats["total"])
 
     st.divider()
-    st.caption("Для індексації нових даних:")
+    st.caption("Нові повідомлення (інкрементально):")
     st.code("source .venv/bin/activate\npython src/ingest_telegram.py", language="bash")
+    st.caption("Старі повідомлення (бекфіл, яких не вистачає):")
+    st.code("source .venv/bin/activate\npython src/ingest_telegram.py --backfill", language="bash")
+    st.caption("Instagram:")
     st.code("source .venv/bin/activate\npython src/ingest_instagram.py", language="bash")
 
 # Main search interface

@@ -6,8 +6,13 @@
 #   - Lines starting with # are comments
 #   - Empty lines are ignored
 #   - Inline comments after the channel name are supported (# ...)
+#   - Exclude topics:  channel | -topic1 | -topic2
+#   - Limit topic age:  channel | 180:topic1 | 180:topic2  (days)
+#   - Limit whole channel:  channel | 180:*
 # =============================================================================
 
 # --- Example ---
 # my_favorite_channel   # Description
 # -1001234567890        # Private group (use numeric ID)
+# my_forum | -Memes | -Spam | 180:Jobs    # Forum: exclude 2 topics, limit Jobs to 6 months
+# job_board | 180:*     # Entire channel limited to 6 months
