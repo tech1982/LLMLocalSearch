@@ -4,9 +4,11 @@ Streamlit web UI for semantic search across Telegram & Instagram.
 import streamlit as st
 import sys
 import os
+import warnings
+warnings.filterwarnings("ignore", message=".*torch.classes.*")
 sys.path.insert(0, os.path.dirname(__file__))
 
-from search_engine import search, generate_answer, get_stats, get_channels
+from search_engine import search, generate_answer, get_stats, list_channels
 
 st.set_page_config(
     page_title="🔍 TG & Insta Search",
@@ -27,21 +29,28 @@ with st.sidebar:
         format_func=lambda x: {"all": "🌐 All sources", "telegram": "📱 Telegram", "instagram": "📸 Instagram"}[x]
     )
 
-    channels = get_channels()
-    channel_options = ["all"] + channels
-    channel = st.selectbox(
-        "Channel",
-        channel_options,
-        format_func=lambda x: "📡 All channels" if x == "all" else x
-    )
+    channels = list_channels()
+    channel_names = [c["name"] for c in channels]
+    channel_labels = {c["name"]: f"{c['name']} ({c['count']:,})" for c in channels}
 
-    n_results = st.slider("Number of results", 3, 20, 7)
+    if channel_names:
+        selected_channels = st.multiselect(
+            "Channels to search",
+            options=channel_names,
+            default=channel_names,
+            format_func=lambda x: channel_labels.get(x, x),
+        )
+    else:
+        selected_channels = []
+        st.info("No channels indexed yet. Run the ingestion script.")
+
+    n_results = st.slider("Number of results", 3, 20, 10)
 
     use_llm = st.toggle("🤖 Generate answer (Azure OpenAI)", value=True)
 
     answer_lang = st.selectbox(
         "Answer language",
-        ["en", "uk", "ru", "pl"],
+        ["uk", "en", "ru", "pl"],
         format_func=lambda x: {"en": "🇬🇧 English", "uk": "🇺🇦 Ukrainian", "ru": "🇷🇺 Russian", "pl": "🇵🇱 Polish"}[x]
     )
 
@@ -66,12 +75,16 @@ query = st.text_input(
 )
 
 if query:
+    if not selected_channels:
+        st.warning("Please select at least one channel to search.")
+        st.stop()
+
     with st.spinner("🔎 Searching..."):
         results = search(
             query=query,
             n_results=n_results,
             source_filter=source if source != "all" else None,
-            channel_filter=channel if channel != "all" else None
+            channel_filter=selected_channels,
         )
 
     if not results:

@@ -18,11 +18,11 @@ rm .env
 ### Remove only indexed data (re-index from scratch)
 
 ```bash
-rm -rf data/chromadb/
+rm -rf data/lance/
 # Then re-run: source .venv/bin/activate && python src/ingest_telegram.py
 ```
 
-### Remove cached embedding model (~470 MB)
+### Remove cached embedding model (~1.3 GB)
 
 ```bash
 rm -rf data/model_cache/
@@ -36,8 +36,8 @@ Will re-download on next search or indexing run.
 
 | Component | Location | Size |
 |---|---|---|
-| ChromaDB index | `data/chromadb/` | varies |
-| Embedding model cache | `data/model_cache/` | ~470 MB |
+| LanceDB index | `data/lance/` | varies |
+| Embedding model cache | `data/model_cache/` | ~1.3 GB |
 | Telegram sessions | `sessions/` | < 1 MB |
 | Python venv | `.venv/` in project | ~2.5 GB |
 

@@ -1,8 +1,11 @@
 telethon==1.37.0
 instaloader==4.14.1
-chromadb==0.5.23
+lancedb>=0.17,<1.0
+pyarrow>=17.0
+pandas>=2.2
 sentence-transformers==3.4.1
 streamlit==1.41.1
 openai==1.68.0
 python-dotenv==1.0.1
+tenacity==9.0.0
 torch==2.5.1

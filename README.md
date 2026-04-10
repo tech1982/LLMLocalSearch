@@ -7,15 +7,15 @@ Searches by **meaning and context**, not keywords. Supports 🇺🇦 🇷🇺 �
 
 ```
 ┌──────────────┐     ┌──────────────────┐     ┌──────────────┐
-│  Telegram    │────▶│  ChromaDB        │◀────│  Streamlit   │
+│  Telegram    │────▶│  LanceDB         │◀────│  Streamlit   │
 │  (Telethon)  │     │  + embeddings    │     │  Web UI      │
 ├──────────────┤     │  (multilingual   │     │  :8501       │
-│  Instagram   │────▶│   -e5-small)     │     └──────┬───────┘
-│ (Instaloader)│     └───────┬──────────┘            │
-└──────────────┘             │                       ▼
+│  Instagram   │────▶│  -e5-large-      │     └──────┬───────┘
+│ (Instaloader)│     │   instruct)      │            │
+└──────────────┘     └───────┬──────────┘            ▼
                       Semantic search         ┌──────────────┐
                       (cosine similarity) ───▶│  Azure OpenAI │
-                                              │  (gpt-4.1-mini)│
+                                              │  (gpt-4.1)   │
                                               │  RAG answer  │
                                               └──────────────┘
 ```
@@ -24,15 +24,15 @@ Searches by **meaning and context**, not keywords. Supports 🇺🇦 🇷🇺 �
 
 | State | RAM |
 |-------|-----|
-| Idle (Streamlit + ChromaDB) | ~200 MB |
-| During search (embedding model loads) | ~1.5 GB |
+| Idle (Streamlit + LanceDB) | ~200 MB |
+| During search (embedding model loads) | ~2.5 GB |
 | With Azure OpenAI answer generation | negligible (cloud API call) |
 
 ---
 
 ## How indexing works (incremental, not one-time)
 
-The ingestion scripts are **idempotent**: every message/post has a unique ID, and ChromaDB skips duplicates. Re-running the script only adds **new** messages that appeared since the last run.
+The ingestion scripts are **idempotent**: every message/post has a unique ID, and LanceDB skips duplicates. Re-running the script only adds **new** messages that appeared since the last run. No state file needed — LanceDB queries the highest stored `message_id` per channel directly.
 
 Three ways to keep the index fresh:
 
@@ -53,7 +53,7 @@ nohup python src/auto_sync.py --interval 30 &
 
 ## Instagram: completely optional
 
-Instagram ingestion is a **separate, manually triggered script**. If you never configure Instagram credentials and never run `ingest_instagram.py`, nothing breaks — the web UI simply searches whatever is in ChromaDB (Telegram only). No errors, no warnings.
+Instagram ingestion is a **separate, manually triggered script**. If you never configure Instagram credentials and never run `ingest_instagram.py`, nothing breaks — the web UI simply searches whatever is in LanceDB (Telegram only). No errors, no warnings.
 
 > ⚠️ Instagram aggressively rate-limits scrapers. If you do use it: index 10–15 accounts per session, wait hours between runs, and use an account that is 1+ year old.
 
@@ -151,7 +151,7 @@ source .venv/bin/activate
 python src/ingest_instagram.py
 
 # Force re-index from scratch
-rm -rf data/chromadb/
+rm -rf data/lance/
 source .venv/bin/activate
 python src/ingest_telegram.py
 ```
@@ -166,6 +166,6 @@ python src/ingest_telegram.py
 | Search query | 1–3 sec |
 | Azure OpenAI answer generation | 2–5 sec |
 
-- The embedding model is cached in `data/model_cache/` — first run downloads ~470 MB
+- The embedding model is cached in `data/model_cache/` — first run downloads ~1.3 GB
 - Python dependencies live in `.venv/` — `rm -rf .venv` removes them cleanly
 - See [UNINSTALL.md](UNINSTALL.md) for full cleanup instructions

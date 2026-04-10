@@ -1,23 +1,56 @@
 """
-Semantic search engine: embeddings + ChromaDB + Azure OpenAI RAG
+Semantic search engine: LanceDB (embedded) + local embeddings + Azure OpenAI RAG.
+LanceDB stores vectors on disk via the columnar Lance format.
+Local sentence-transformers handles embeddings. Azure OpenAI handles chat.
 """
 from __future__ import annotations
 import os
-import chromadb
-from chromadb.config import Settings
+import lancedb
+import pyarrow as pa
 from sentence_transformers import SentenceTransformer
 from openai import AzureOpenAI
-from datetime import datetime
+from dotenv import load_dotenv
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+load_dotenv(os.path.join(_PROJECT_ROOT, ".env"))
+
+# Suppress noisy but harmless warnings
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+# ─── Config ──────────────────────────────────────────────────────
 DATA_DIR = os.environ.get("DATA_DIR", os.path.join(_PROJECT_ROOT, "data"))
-EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "intfloat/multilingual-e5-small")
+LANCE_DB_PATH = os.path.join(DATA_DIR, "lance")
+TABLE_NAME = "messages"
+EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "intfloat/multilingual-e5-large-instruct")
+VECTOR_DIM = 1024  # multilingual-e5-large-instruct
+
 AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
 AZURE_OPENAI_KEY = os.environ.get("AZURE_OPENAI_KEY", "")
-AZURE_OPENAI_DEPLOYMENT = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4-1-mini")
-AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
+AZURE_OPENAI_DEPLOYMENT = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4-1")
+AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "2025-04-01-preview")
+
+# Index is auto-created after table grows past this many rows
+INDEX_THRESHOLD = 50_000
 
 _model = None
+_openai_client = None
+_db = None
+
+
+# ─── Clients ─────────────────────────────────────────────────────
+def _get_openai_client() -> AzureOpenAI:
+    global _openai_client
+    if _openai_client is None:
+        if not AZURE_OPENAI_ENDPOINT or not AZURE_OPENAI_KEY:
+            raise RuntimeError("AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_KEY must be set in .env")
+        _openai_client = AzureOpenAI(
+            azure_endpoint=AZURE_OPENAI_ENDPOINT,
+            api_key=AZURE_OPENAI_KEY,
+            api_version=AZURE_OPENAI_API_VERSION,
+        )
+    return _openai_client
+
 
 def get_embedding_model() -> SentenceTransformer:
     global _model
@@ -28,234 +61,286 @@ def get_embedding_model() -> SentenceTransformer:
     return _model
 
 
-def get_chroma_client() -> chromadb.ClientAPI:
-    db_path = os.path.join(DATA_DIR, "chromadb")
-    os.makedirs(db_path, exist_ok=True)
-    return chromadb.PersistentClient(path=db_path)
+def get_db() -> lancedb.DBConnection:
+    global _db
+    if _db is None:
+        os.makedirs(LANCE_DB_PATH, exist_ok=True)
+        _db = lancedb.connect(LANCE_DB_PATH)
+    return _db
 
 
-def get_or_create_collection(name: str = "messages"):
-    client = get_chroma_client()
-    return client.get_or_create_collection(
-        name=name,
-        metadata={"hnsw:space": "cosine"}
-    )
+def _schema() -> pa.Schema:
+    return pa.schema([
+        pa.field("id", pa.string()),
+        pa.field("vector", pa.list_(pa.float32(), VECTOR_DIM)),
+        pa.field("text", pa.string()),
+        pa.field("source", pa.string()),
+        pa.field("channel", pa.string()),
+        pa.field("channel_username", pa.string()),
+        pa.field("topic", pa.string()),
+        pa.field("author", pa.string()),
+        pa.field("date", pa.string()),
+        pa.field("url", pa.string()),
+        pa.field("message_id", pa.int64()),
+    ])
 
 
+def get_table():
+    db = get_db()
+    if TABLE_NAME not in db.table_names():
+        return db.create_table(TABLE_NAME, schema=_schema())
+    return db.open_table(TABLE_NAME)
+
+
+# ─── Embeddings ──────────────────────────────────────────────────
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
 def embed_texts(texts: list[str]) -> list[list[float]]:
-    """Embed texts with e5 prefix for better retrieval."""
+    """Embed document texts with e5-instruct 'passage:' prefix."""
     model = get_embedding_model()
-    # multilingual-e5 requires "query: " or "passage: " prefix
-    prefixed = [f"passage: {t}" for t in texts]
-    embeddings = model.encode(prefixed, show_progress_bar=True, batch_size=64)
+    cleaned = [t[:8000] if len(t) > 8000 else t for t in texts]
+    prefixed = [f"passage: {t}" for t in cleaned]
+    embeddings = model.encode(prefixed, show_progress_bar=True, batch_size=32)
     return embeddings.tolist()
 
 
 def embed_query(query: str) -> list[float]:
     model = get_embedding_model()
-    embedding = model.encode(f"query: {query}")
+    task = "Given a search query, retrieve relevant Telegram messages"
+    embedding = model.encode(f"Instruct: {task}\nquery: {query}")
     return embedding.tolist()
+
+
+# ─── Indexing maintenance ────────────────────────────────────────
+def _ensure_index(table) -> None:
+    """Create an IVF-PQ index once the table is large enough."""
+    row_count = table.count_rows()
+    if row_count < INDEX_THRESHOLD:
+        return
+    try:
+        existing = table.list_indices()
+        if existing:
+            return
+    except Exception:
+        pass
+
+    print(f"  Creating IVF-PQ index on {row_count:,} vectors...")
+    try:
+        table.create_index(metric="cosine", vector_column_name="vector")
+        print("  Index created.")
+    except Exception as e:
+        print(f"  ⚠️ Index creation failed (will retry next sync): {e}")
+
+
+# ─── Document operations ────────────────────────────────────────
+def _existing_ids(table, ids: list[str]) -> set[str]:
+    """Check which IDs already exist in the table."""
+    if table.count_rows() == 0 or not ids:
+        return set()
+    existing = set()
+    for i in range(0, len(ids), 500):
+        chunk = ids[i:i + 500]
+        escaped = ", ".join("'" + x.replace("'", "''") + "'" for x in chunk)
+        try:
+            result = table.to_lance().to_table(
+                columns=["id"],
+                filter=f"id IN ({escaped})",
+            )
+            existing.update(result.column("id").to_pylist())
+        except Exception:
+            pass
+    return existing
 
 
 def add_documents(
     texts: list[str],
     metadatas: list[dict],
     ids: list[str],
-    collection_name: str = "messages",
-    batch_size: int = 200
-):
-    """Add documents to ChromaDB in batches."""
-    collection = get_or_create_collection(collection_name)
+    batch_size: int = 100,
+) -> int:
+    """Add documents, skipping existing IDs. Returns count added."""
+    table = get_table()
+    existing = _existing_ids(table, ids)
 
-    # Filter out already existing IDs
-    existing = set()
-    try:
-        for i in range(0, len(ids), 500):
-            batch_ids = ids[i:i+500]
-            result = collection.get(ids=batch_ids)
-            existing.update(result["ids"])
-    except Exception:
-        pass
-
-    new_texts, new_metas, new_ids = [], [], []
+    new_records: list[tuple[str, str, dict]] = []
     for t, m, id_ in zip(texts, metadatas, ids):
         if id_ not in existing:
-            new_texts.append(t)
-            new_metas.append(m)
-            new_ids.append(id_)
+            new_records.append((id_, t, m))
 
-    if not new_texts:
-        print("No new documents to add.")
+    if not new_records:
+        print("  No new documents to add.")
         return 0
 
-    print(f"Embedding {len(new_texts)} new documents...")
-    for i in range(0, len(new_texts), batch_size):
-        batch_t = new_texts[i:i+batch_size]
-        batch_m = new_metas[i:i+batch_size]
-        batch_i = new_ids[i:i+batch_size]
-        batch_e = embed_texts(batch_t)
+    print(f"  Embedding {len(new_records)} new documents...")
+    total_added = 0
 
-        collection.add(
-            documents=batch_t,
-            embeddings=batch_e,
-            metadatas=batch_m,
-            ids=batch_i
-        )
-        print(f"  Added batch {i//batch_size + 1} ({len(batch_t)} docs)")
+    for i in range(0, len(new_records), batch_size):
+        batch = new_records[i:i + batch_size]
+        batch_texts = [r[1] for r in batch]
+        embeddings = embed_texts(batch_texts)
 
-    print(f"Total added: {len(new_texts)}")
-    return len(new_texts)
+        rows = []
+        for (id_, text, meta), vec in zip(batch, embeddings):
+            rows.append({
+                "id": id_,
+                "vector": vec,
+                "text": text,
+                "source": meta.get("source", ""),
+                "channel": meta.get("channel", ""),
+                "channel_username": meta.get("channel_username", ""),
+                "topic": meta.get("topic", ""),
+                "author": meta.get("author", ""),
+                "date": meta.get("date", ""),
+                "url": meta.get("url", ""),
+                "message_id": int(meta.get("message_id", 0)),
+            })
+
+        table.add(rows)
+        total_added += len(rows)
+        print(f"    Added batch {i // batch_size + 1} ({total_added}/{len(new_records)})")
+
+    _ensure_index(table)
+    return total_added
 
 
+# ─── State queries (for incremental sync and UI) ────────────────
+def get_max_message_id_per_channel() -> dict[str, int]:
+    """Return the highest stored message_id per Telegram channel.
+    Used for incremental sync — no state file needed."""
+    table = get_table()
+    if table.count_rows() == 0:
+        return {}
+
+    arrow = table.to_lance().to_table(
+        columns=["channel_username", "message_id"],
+        filter="source = 'telegram'",
+    )
+    if arrow.num_rows == 0:
+        return {}
+
+    df = arrow.to_pandas()
+    grouped = df.groupby("channel_username")["message_id"].max()
+    return {str(k): int(v) for k, v in grouped.items() if k}
+
+
+def list_channels() -> list[dict]:
+    """All unique channels with message counts (for UI multiselect)."""
+    table = get_table()
+    if table.count_rows() == 0:
+        return []
+
+    arrow = table.to_lance().to_table(columns=["channel", "source"])
+    df = arrow.to_pandas()
+    counts = df.groupby(["source", "channel"]).size().reset_index(name="count")
+    return sorted(
+        [
+            {
+                "name": row["channel"],
+                "source": row["source"],
+                "count": int(row["count"]),
+            }
+            for _, row in counts.iterrows()
+        ],
+        key=lambda c: -c["count"],
+    )
+
+
+def get_stats() -> dict:
+    table = get_table()
+    total = table.count_rows()
+    if total == 0:
+        return {"total": 0, "telegram": 0, "instagram": 0, "channels": 0}
+
+    channels = list_channels()
+    tg = sum(c["count"] for c in channels if c["source"] == "telegram")
+    ig = sum(c["count"] for c in channels if c["source"] == "instagram")
+    return {"total": total, "telegram": tg, "instagram": ig, "channels": len(channels)}
+
+
+# ─── Search ──────────────────────────────────────────────────────
 def search(
     query: str,
     n_results: int = 10,
     source_filter: str | None = None,
-    channel_filter: str | None = None,
-    collection_name: str = "messages"
+    channel_filter: list[str] | None = None,
 ) -> list[dict]:
-    """Semantic search through indexed messages."""
-    collection = get_or_create_collection(collection_name)
-
-    if collection.count() == 0:
+    """Semantic search with optional channel filter."""
+    table = get_table()
+    if table.count_rows() == 0:
         return []
 
-    query_embedding = embed_query(query)
+    query_vector = embed_query(query)
+    builder = table.search(query_vector).limit(n_results)
 
-    where_filter = None
-    if source_filter and source_filter != "all":
-        where_filter = {"source": source_filter}
+    where_parts = []
+    if source_filter:
+        where_parts.append(f"source = '{source_filter.replace(chr(39), chr(39)*2)}'")
     if channel_filter:
-        channel_cond = {"channel": channel_filter}
-        if where_filter:
-            where_filter = {"$and": [where_filter, channel_cond]}
-        else:
-            where_filter = channel_cond
+        escaped = [c.replace("'", "''") for c in channel_filter]
+        in_list = ", ".join(f"'{c}'" for c in escaped)
+        where_parts.append(f"channel IN ({in_list})")
 
-    results = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=min(n_results, collection.count()),
-        where=where_filter,
-        include=["documents", "metadatas", "distances"]
-    )
+    if where_parts:
+        builder = builder.where(" AND ".join(where_parts))
+
+    raw_results = builder.to_list()
 
     output = []
-    for doc, meta, dist in zip(
-        results["documents"][0],
-        results["metadatas"][0],
-        results["distances"][0]
-    ):
+    for r in raw_results:
+        distance = r.get("_distance", 1.0)
         output.append({
-            "text": doc,
-            "source": meta.get("source", "unknown"),
-            "channel": meta.get("channel", ""),
-            "author": meta.get("author", ""),
-            "date": meta.get("date", ""),
-            "url": meta.get("url", ""),
-            "topic": meta.get("topic", ""),
-            "similarity": round(1 - dist, 4)  # cosine distance → similarity
+            "text": r.get("text", ""),
+            "source": r.get("source", ""),
+            "channel": r.get("channel", ""),
+            "topic": r.get("topic", ""),
+            "author": r.get("author", ""),
+            "date": r.get("date", ""),
+            "url": r.get("url", ""),
+            "similarity": round(max(0.0, 1.0 - distance), 4),
         })
     return output
 
 
-def generate_answer(query: str, results: list[dict], language: str = "en") -> str:
-    """Use Azure OpenAI to synthesize an answer from search results (RAG)."""
+# ─── RAG answer generation ──────────────────────────────────────
+def generate_answer(query: str, results: list[dict], language: str = "uk") -> str:
+    """Synthesize an answer from search results using Azure OpenAI."""
     if not results:
         return "No matches found for your query."
-
-    if not AZURE_OPENAI_ENDPOINT or not AZURE_OPENAI_KEY:
-        return "⚠️ Azure OpenAI is not configured. Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_KEY in .env"
 
     context_parts = []
     for i, r in enumerate(results[:7], 1):
         source_info = f"[{r['source']}] {r['channel']}"
+        if r.get("topic"):
+            source_info += f" → {r['topic']}"
         if r.get("author"):
             source_info += f" — {r['author']}"
         if r.get("date"):
             source_info += f" ({r['date']})"
-        context_parts.append(f"--- Source {i} ({source_info}) ---\n{r['text']}")
+        link = f"\nLink: {r['url']}" if r.get("url") else ""
+        context_parts.append(f"--- Source {i} ({source_info}) ---\n{r['text']}{link}")
 
     context = "\n\n".join(context_parts)
-
     lang_map = {"uk": "Ukrainian", "ru": "Russian", "pl": "Polish", "en": "English"}
-    lang_instruction = lang_map.get(language, "English")
+    lang_name = lang_map.get(language, "Ukrainian")
 
-    prompt = f"""You are a helpful assistant that answers questions using only the provided context from Telegram channels and Instagram.
-Respond in {lang_instruction}. Be specific and cite sources when possible.
-If the context does not contain the answer, say so honestly.
-
-CONTEXT:
-{context}
-
-QUESTION: {query}
-
-ANSWER:"""
+    system_prompt = (
+        f"You are a helpful assistant that answers questions based on the provided context "
+        f"from Telegram channels. Always answer in {lang_name}. Be concrete, cite sources by "
+        f"referring to '[Source N]'. If the context does not contain an answer, say so honestly. "
+        f"Include the link to the most relevant source at the end."
+    )
+    user_prompt = f"CONTEXT:\n{context}\n\nQUESTION: {query}\n\nANSWER:"
 
     try:
-        client = AzureOpenAI(
-            azure_endpoint=AZURE_OPENAI_ENDPOINT,
-            api_key=AZURE_OPENAI_KEY,
-            api_version=AZURE_OPENAI_API_VERSION,
-        )
+        client = _get_openai_client()
         response = client.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
             temperature=0.3,
-            max_tokens=2048,
+            max_completion_tokens=2048,
         )
         return response.choices[0].message.content
     except Exception as e:
         return f"⚠️ Azure OpenAI error: {e}"
-
-
-def get_stats() -> dict:
-    """Get indexing statistics."""
-    collection = get_or_create_collection()
-    total = collection.count()
-
-    stats = {"total": total, "telegram": 0, "instagram": 0}
-    if total > 0:
-        try:
-            # Sample to estimate source distribution
-            sample = collection.get(limit=min(total, 1000), include=["metadatas"])
-            for m in sample["metadatas"]:
-                src = m.get("source", "")
-                if src == "telegram":
-                    stats["telegram"] += 1
-                elif src == "instagram":
-                    stats["instagram"] += 1
-            # Extrapolate
-            sample_size = len(sample["metadatas"])
-            if sample_size < total:
-                ratio = total / sample_size
-                stats["telegram"] = int(stats["telegram"] * ratio)
-                stats["instagram"] = int(stats["instagram"] * ratio)
-        except Exception:
-            pass
-    return stats
-
-
-def get_channels() -> list[str]:
-    """Get list of unique channel names from indexed data."""
-    collection = get_or_create_collection()
-    total = collection.count()
-    if total == 0:
-        return []
-    try:
-        channels: set[str] = set()
-        batch_size = 5000
-        offset = 0
-        while offset < total:
-            batch = collection.get(
-                limit=batch_size, offset=offset, include=["metadatas"]
-            )
-            for m in batch["metadatas"]:
-                ch = m.get("channel", "")
-                if ch:
-                    channels.add(ch)
-            if len(batch["metadatas"]) < batch_size:
-                break
-            offset += batch_size
-        return sorted(channels)
-    except Exception:
-        return []
