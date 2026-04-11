@@ -218,11 +218,11 @@ async def ingest_channel(client, channel_name: str, min_id: int = 0, max_id: int
                 excluded_count += 1
                 continue
 
-        # Build full URL — for forum topics, deep-link to the topic thread
+        # Build full URL — use /s/ path so links open in browser, not the app
         if hasattr(entity, "username") and entity.username:
-            base = f"https://t.me/{entity.username}"
+            base = f"https://t.me/s/{entity.username}"
             if is_forum and topic_id:
-                url = f"{base}/{topic_id}/{message.id}"
+                url = f"{base}?topic={topic_id}&single#{message.id}"
             else:
                 url = f"{base}/{message.id}"
         else:

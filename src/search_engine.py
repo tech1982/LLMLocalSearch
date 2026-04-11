@@ -456,13 +456,68 @@ def _expand_query(query: str) -> str:
             messages=[
                 {"role": "system", "content": (
                     "You expand search queries by adding full forms of abbreviations, slang, "
-                    "and informal terms. Return ONLY the expanded query — no explanations.\n"
+                    "and informal terms relevant to Ukrainian/Polish/IT context. "
+                    "Return ONLY the expanded query — no explanations.\n"
                     "Examples:\n"
-                    "КП → КП (карта побиту, karta pobytu)\n"
-                    "ксеф → ксеф (KSeF, Krajowy System e-Faktur)\n"
-                    "ZUS → ZUS (Zakład Ubezpieczeń Społecznych, соціальне страхування)\n"
-                    "PIT → PIT (podatek dochodowy, податок на доходи)\n"
-                    "If no abbreviations found, return the query unchanged."
+                    # Polish bureaucracy / residency
+                    "КП -> КП (карта побиту, karta pobytu, посвідка на проживання)\n"
+                    "КС -> КС (карта сталего побиту, karta stałego pobytu)\n"
+                    "КЧ -> КЧ (карта часового побиту, karta czasowego pobytu)\n"
+                    "КП тимчасова -> karta pobytu tymczasowa\n"
+                    "блакитна карта -> blue card, EU Blue Card, karta niebieska\n"
+                    "блушка -> blue card, EU Blue Card\n"
+                    "UKR -> UKR (захист тимчасовий, tymczasowa ochrona, temporary protection)\n"
+                    "ТО -> ТО (тимчасова охорона, tymczasowa ochrona)\n"
+                    "PESEL -> PESEL (польський ідентифікаційний номер)\n"
+                    "NIP -> NIP (польський податковий номер, numer identyfikacji podatkowej)\n"
+                    "REGON -> REGON (реєстраційний номер підприємства в Польщі)\n"
+                    "ВНЖ -> ВНЖ (вид на жительство, карта побиту)\n"
+                    # Polish taxes / finance
+                    "ксеф -> KSeF (Krajowy System e-Faktur, електронні фактури)\n"
+                    "KSeF -> KSeF (Krajowy System e-Faktur)\n"
+                    "ZUS -> ZUS (Zakład Ubezpieczeń Społecznych, соціальне страхування)\n"
+                    "PIT -> PIT (podatek dochodowy, податок на доходи фізосіб)\n"
+                    "PIT-37 -> PIT-37 (річна декларація з доходів)\n"
+                    "CIT -> CIT (podatek dochodowy od osób prawnych, корпоративний податок)\n"
+                    "VAT -> VAT (podatek od towarów i usług, ПДВ)\n"
+                    "US -> US (urząd skarbowy, податкова)\n"
+                    "JP -> JP (jednoosobowa działalność gospodarcza, ФОП)\n"
+                    "ФОП -> ФОП (фізична особа-підприємець, działalność gospodarcza)\n"
+                    "DG -> DG (działalność gospodarcza, підприємницька діяльність)\n"
+                    "B2B -> B2B (контракт між підприємцями, umowa B2B)\n"
+                    "UoP -> UoP (umowa o pracę, трудовий договір)\n"
+                    "UoZ -> UoZ (umowa zlecenie, договір доручення)\n"
+                    "UoD -> UoD (umowa o dzieło, договір підряду)\n"
+                    # Polish government / offices
+                    "UdSC -> UdSC (Urząd do Spraw Cudzoziemców, відділ у справах іноземців)\n"
+                    "МЗС -> МЗС (міністерство закордонних справ)\n"
+                    "МОЗ -> МОЗ (міністерство охорони здоров'я)\n"
+                    "ZUS -> ZUS (соціальне страхування, Zakład Ubezpieczeń Społecznych)\n"
+                    "NFZ -> NFZ (Narodowy Fundusz Zdrowia, медичне страхування)\n"
+                    "PFRON -> PFRON (Państwowy Fundusz Rehabilitacji Osób Niepełnosprawnych)\n"
+                    # IT / tech
+                    "AD -> AD (Active Directory)\n"
+                    "GPO -> GPO (Group Policy Object, групова політика)\n"
+                    "DC -> DC (Domain Controller, контролер домену)\n"
+                    "LDAP -> LDAP (протокол каталогів)\n"
+                    "SSO -> SSO (Single Sign-On, єдиний вхід)\n"
+                    "MFA -> MFA (Multi-Factor Authentication, двофакторна аутентифікація)\n"
+                    "VPN -> VPN (Virtual Private Network)\n"
+                    "CI/CD -> CI/CD (Continuous Integration / Continuous Deployment)\n"
+                    "k8s -> k8s (Kubernetes)\n"
+                    "ТЗ -> ТЗ (технічне завдання, technical specification)\n"
+                    # Military / Ukraine
+                    "ТЦК -> ТЦК (територіальний центр комплектування, військкомат)\n"
+                    "ВЛК -> ВЛК (військово-лікарська комісія)\n"
+                    "ТрО -> ТрО (Територіальна оборона)\n"
+                    "ЗСУ -> ЗСУ (Збройні Сили України)\n"
+                    "ССО -> ССО (Сили Спеціальних Операцій)\n"
+                    "СБУ -> СБУ (Служба Безпеки України)\n"
+                    "ГУР -> ГУР (Головне управління розвідки)\n"
+                    "МО -> МО (Міністерство оборони)\n"
+                    "ВСП -> ВСП (военная служба по контракту)\n"
+                    "ДМБ -> ДМБ (демобілізація)\n"
+                    "If no abbreviations or slang found, return the query unchanged."
                 )},
                 {"role": "user", "content": query},
             ],
@@ -483,13 +538,13 @@ def generate_answer(query: str, results: list[dict], language: str = "uk") -> st
     for i, r in enumerate(results, 1):
         source_info = f"[{r['source']}] {r['channel']}"
         if r.get("topic"):
-            source_info += f" → {r['topic']}"
+            source_info += f" -> {r['topic']}"
         if r.get("author"):
             source_info += f" — {r['author']}"
         if r.get("date"):
             source_info += f" ({r['date']})"
         link = f"\nLink: {r['url']}" if r.get("url") else ""
-        context_parts.append(f"--- Source {i} ({source_info}) ---\n{r['text']}{link}")
+        context_parts.append(f"--- [{i}] ({source_info}) ---\n{r['text']}{link}")
 
     context = "\n\n".join(context_parts)
     lang_map = {"uk": "Ukrainian", "ru": "Russian", "pl": "Polish", "en": "English"}
@@ -499,7 +554,7 @@ def generate_answer(query: str, results: list[dict], language: str = "uk") -> st
         f"You are a helpful assistant that answers questions based on the provided context "
         f"from Telegram channels. Always answer in {lang_name}. "
         f"Be concrete and informative. Use bullet points or structure when it helps clarity. "
-        f"Cite sources by referring to '[Source N]'. "
+        f"Cite sources using their number in square brackets, e.g. [1], [2, 5]. "
         f"If the context does not contain an answer, say so honestly."
     )
     user_prompt = f"CONTEXT:\n{context}\n\nQUESTION: {query}\n\nANSWER:"
