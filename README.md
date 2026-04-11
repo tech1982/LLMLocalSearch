@@ -1,20 +1,20 @@
 # 🔍 Semantic Search — Telegram & Instagram
 
-Local semantic search over Telegram channels/groups and Instagram accounts.
-Searches by **meaning and context**, not keywords. Supports 🇺🇦 🇷🇺 🇵🇱 🇬🇧 content natively.
+Hybrid semantic search over Telegram channels/groups and Instagram accounts.
+Core search runs **locally** (embeddings + vector/FTS index). AI answer generation and query expansion use **Azure OpenAI** (cloud). Supports 🇺🇦 🇷🇺 🇵🇱 🇬🇧 content natively.
 
 ## Architecture
 
 ```
 ┌──────────────┐     ┌──────────────────┐     ┌──────────────┐
 │  Telegram    │────▶│  LanceDB         │◀────│  Streamlit   │
-│  (Telethon)  │     │  + embeddings    │     │  Web UI      │
+│  (Telethon)  │     │  vector + FTS    │     │  Web UI      │
 ├──────────────┤     │  (multilingual   │     │  :8501       │
 │  Instagram   │────▶│  -e5-large-      │     └──────┬───────┘
 │ (Instaloader)│     │   instruct)      │            │
 └──────────────┘     └───────┬──────────┘            ▼
-                      Semantic search         ┌──────────────┐
-                      (cosine similarity) ───▶│  Azure OpenAI │
+                      Hybrid search          ┌──────────────┐
+                      (vector + FTS/RRF) ───▶│  Azure OpenAI │
                                               │  (gpt-4.1)   │
                                               │  RAG answer  │
                                               └──────────────┘
@@ -55,6 +55,7 @@ crontab -e
 - `MAX_DAYS_BACK` (default 3 years) caps how far back to go on first sync or backfill
 - Progress is printed every 5,000 messages with `[channel N/total]`, scanned count, and `%` of channel total
 - Flushes to DB every `FLUSH_EVERY` messages (default 10,000) — safe to Ctrl+C without losing progress
+- After each sync, FTS index is rebuilt and Lance fragments are compacted automatically
 
 ---
 
@@ -165,6 +166,13 @@ Fallback: if `channels.txt` doesn't exist, `TG_CHANNELS` in `.env` is used.
 
 ## 🧠 Search quality
 
+### Hybrid search (vector + full-text)
+Every query runs two searches in parallel and merges results with **Reciprocal Rank Fusion (RRF)**:
+- **Vector search** — semantic similarity via `multilingual-e5-large-instruct` embeddings
+- **FTS search** — exact keyword matching via a LanceDB full-text index
+- FTS results get 1.5× weight in RRF (keyword matches are usually more precise)
+- An exact substring bonus (+0.015) further promotes messages that literally contain the query
+
 ### Multilingual morphology
 The embedding model (`multilingual-e5-large-instruct`) natively handles Ukrainian, Russian, Polish, and English morphology. Searching for "повірка лічильника" will surface messages containing "повірці лічильника", "повірку лічильника", "перевірка лічильника" — all with >0.95 cosine similarity. No stemming config needed.
 
@@ -179,7 +187,7 @@ Recent messages are promoted in results even when an older message is slightly m
 | 3 months | +0.006 |
 | 6+ months | ~0 |
 
-The search fetches 3× more candidates from the vector DB, applies the boost, then re-ranks and returns top-N.
+The search fetches 5× more candidates from the vector/FTS indexes, applies RRF + recency boost, then re-ranks and returns top-N (default: **30**).
 
 ### Query expansion (abbreviation/slang handling)
 Before embedding, the query is sent to Azure OpenAI to expand abbreviations and informal terms. Examples:
@@ -193,10 +201,22 @@ This makes the expanded query match documents that spell things out in full. Fal
 
 ## 🖥️ Web UI
 
-- **Sidebar** groups channels by category (read from `channels.txt` headers like `# --- IT / Tech ---`)
-- Per-category **+/−** toggle for quick filtering
-- **Language selector** for the AI answer (🇺🇦 🇬🇧 🇷🇺 🇵🇱)
-- Clickable **[Source N]** links in AI answers open the original Telegram message
+**Left sidebar** — channel filters:
+- Channels grouped by category (from `channels.txt` section headers like `# --- Poland / Warsaw ---`)
+- Category order preserved from the file; reorderable via the right panel
+- Per-category **+/−** toggle for quick select/deselect
+- Search only triggers on **Enter** or the Search button — not on channel checkbox changes
+
+**Right panel** — admin tools (collapsed expanders):
+- **⚙️ Налаштування** — result count slider (3–50, default 30), LLM toggle, language selector
+- **📊 Статистика** — Telegram/Instagram/total document counts
+- **➕ Додати канал** — add a new channel by username; title is auto-resolved from Telegram; optional retention limit (days)
+- **🔄 Індексація** — run Telegram delta sync, backfill, or Instagram ingestion with live log output
+- **📋 Порядок категорій** — reorder sidebar category groups with ▲/▼ buttons
+
+**AI answer:**
+- Source citations rendered as clickable date links: `[[2025-04-09]](url)` opening the message in Telegram web preview
+- Language selector: 🇺🇦 🇬🇧 🇷🇺 🇵🇱
 
 ---
 

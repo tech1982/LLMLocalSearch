@@ -186,34 +186,15 @@ with st.sidebar:
         selected_channels = []
         st.info("Канали ще не проіндексовані. Запустіть скрипт індексації.")
 
-    n_results = st.slider("Кількість результатів", 3, 50, DEFAULT_RESULTS)
-
-    use_llm = st.toggle("🤖 Генерувати відповідь (Azure OpenAI)", value=True)
-
-    answer_lang = st.selectbox(
-        "Мова відповіді",
-        ["uk", "en", "ru", "pl"],
-        index=0,
-        format_func=lambda x: {"en": "🇬🇧 Англійська", "uk": "🇺🇦 Українська", "ru": "🇷🇺 Російська", "pl": "🇵🇱 Польська"}[x]
-    )
-
-    st.divider()
-    st.header("📊 Статистика")
-    stats = get_stats()
-    col1, col2 = st.columns(2)
-    col1.metric("📱 Telegram", stats["telegram"])
-    col2.metric("📸 Instagram", stats["instagram"])
-    st.metric("📄 Всього документів", stats["total"])
-
 # ─── Helper: run ingestion subprocess ────────────────────────────
-def _run_ingestion(container, cmd_args: list[str], label: str):
-    """Run an ingestion script and stream output into the given container."""
+def _run_ingestion(placeholder, cmd_args: list[str], label: str):
+    """Run an ingestion script and stream output into the given placeholder."""
     venv_python = os.path.join(os.path.dirname(__file__), "..", ".venv", "bin", "python")
     if not os.path.exists(venv_python):
         venv_python = sys.executable
     script = os.path.join(os.path.dirname(__file__), cmd_args[0])
     full_cmd = [venv_python, script] + cmd_args[1:]
-    with container.status(label, expanded=True) as status:
+    with placeholder.status(label, expanded=True) as status:
         st.text("Запуск...")
         try:
             proc = subprocess.Popen(
@@ -242,14 +223,33 @@ def _run_ingestion(container, cmd_args: list[str], label: str):
 main_col, admin_col = st.columns([3, 1])
 
 with main_col:
-    query = st.text_input(
-        "Задайте питання",
-        placeholder="Наприклад: Де знайти оренду житла у Варшаві?",
-        label_visibility="collapsed"
-    )
+    with st.form("search_form", clear_on_submit=False, border=False):
+        query = st.text_input(
+            "Задайте питання",
+            placeholder="Наприклад: Де знайти оренду житла у Варшаві?",
+            label_visibility="collapsed"
+        )
+        search_submitted = st.form_submit_button("🔎 Шукати", use_container_width=True)
 
 with admin_col:
-    with st.expander("➕ Додати канал", expanded=True):
+    with st.expander("⚙️ Налаштування", expanded=False):
+        n_results = st.slider("Кількість результатів", 3, 50, DEFAULT_RESULTS)
+        use_llm = st.toggle("🤖 Відповідь (Azure OpenAI)", value=True)
+        answer_lang = st.selectbox(
+            "Мова відповіді",
+            ["uk", "en", "ru", "pl"],
+            index=0,
+            format_func=lambda x: {"en": "🇬🇧 Англійська", "uk": "🇺🇦 Українська", "ru": "🇷🇺 Російська", "pl": "🇵🇱 Польська"}[x]
+        )
+
+    with st.expander("📊 Статистика", expanded=False):
+        stats = get_stats()
+        col1, col2 = st.columns(2)
+        col1.metric("📱 TG", stats["telegram"])
+        col2.metric("📸 IG", stats["instagram"])
+        st.metric("📄 Всього", stats["total"])
+
+    with st.expander("➕ Додати канал", expanded=False):
         channels_file = os.path.join(os.path.dirname(__file__), "..", "channels.txt")
         new_username = st.text_input(
             "Username або ID",
@@ -328,13 +328,19 @@ with admin_col:
 
     with st.expander("🔄 Індексація", expanded=True):
         if st.button("📱 Telegram — нові", use_container_width=True, key="btn_tg_sync"):
-            _run_ingestion(st, ["ingest_telegram.py"], "Telegram: нові повідомлення")
+            st.session_state["_ingest_cmd"] = (["ingest_telegram.py"], "Telegram: нові повідомлення")
+            st.rerun()
         if st.button("📱 Telegram — бекфіл", use_container_width=True, key="btn_tg_backfill"):
-            _run_ingestion(st, ["ingest_telegram.py", "--backfill"], "Telegram: бекфіл")
+            st.session_state["_ingest_cmd"] = (["ingest_telegram.py", "--backfill"], "Telegram: бекфіл")
+            st.rerun()
         if st.button("📸 Instagram", use_container_width=True, key="btn_ig"):
-            _run_ingestion(st, ["ingest_instagram.py"], "Instagram: індексація")
+            st.session_state["_ingest_cmd"] = (["ingest_instagram.py"], "Instagram: індексація")
+            st.rerun()
 
-    with st.expander("📋 Порядок категорій", expanded=True):
+    # Ingestion output placeholder — set here, rendered below in main_col
+    pass  # output rendered outside admin_col below
+
+    with st.expander("📋 Порядок категорій", expanded=False):
         order = st.session_state["category_order"]
         for idx, cat in enumerate(order):
             c1, c2, c3 = st.columns([1, 4, 1])
@@ -348,8 +354,14 @@ with admin_col:
                 st.session_state["category_order"] = order
                 st.rerun()
 
+# ─── Ingestion output (main area) ───────────────────────────────
+if "_ingest_cmd" in st.session_state:
+    cmd_args, label = st.session_state.pop("_ingest_cmd")
+    with main_col:
+        _run_ingestion(st, cmd_args, label)
+
 # ─── Search results ──────────────────────────────────────────────
-if query:
+if search_submitted and query:
     if not selected_channels:
         main_col.warning("Будь ласка, оберіть хоча б один канал для пошуку.")
         st.stop()

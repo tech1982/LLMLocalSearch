@@ -311,11 +311,31 @@ def _ensure_fts_index(table) -> bool:
         return False
 
 
+def compact_table() -> None:
+    """Compact Lance fragments and clean up old versions.
+    Should be called after bulk ingestion to avoid 'too many open files' errors."""
+    table = get_table()
+    if table.count_rows() == 0:
+        return
+    try:
+        import datetime
+        lance_ds = table.to_lance()
+        result = lance_ds.optimize.compact_files()
+        if result.fragments_removed > 0:
+            print(f"  Compacted: {result.fragments_removed} → {result.fragments_added} fragments.")
+            lance_ds.cleanup_old_versions(
+                older_than=datetime.timedelta(seconds=0), delete_unverified=True
+            )
+    except Exception as e:
+        print(f"  ⚠️ Compaction failed: {e}")
+
+
 def rebuild_fts_index() -> None:
     """Rebuild (or create) the FTS index on the full table. Call after ingestion."""
     table = get_table()
     if table.count_rows() == 0:
         return
+    compact_table()
     print(f"  Rebuilding FTS index on {table.count_rows():,} documents...")
     try:
         table.create_fts_index(
