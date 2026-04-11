@@ -258,7 +258,19 @@ async def ingest_channel(client, channel_name: str, min_id: int = 0, max_id: int
 
         count += 1
         if count % 5000 == 0:
-            pct = f" ({scanned * 100 // total_in_channel}%)" if total_in_channel else ""
+            if cutoff_date and oldest_date_seen and latest_date:
+                try:
+                    oldest_dt = datetime.strptime(oldest_date_seen, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+                    latest_dt = datetime.strptime(latest_date, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+                    days_covered = max(1, (latest_dt - oldest_dt).days)
+                    total_days = max(1, (latest_dt - cutoff_date).days)
+                    day_pct = min(100, days_covered * 100 // total_days)
+                    estimated_total = int(count / days_covered * total_days)
+                    pct = f" (📅 {day_pct}% of {total_days}d, ~{estimated_total:,} est.)"
+                except Exception:
+                    pct = f" ({scanned * 100 // total_in_channel}%)" if total_in_channel else ""
+            else:
+                pct = f" ({scanned * 100 // total_in_channel}%)" if total_in_channel else ""
             print(f"    Collected {count:,} / scanned {scanned:,}{pct}... (at {oldest_date_seen})")
 
         # Flush to DB periodically to avoid losing progress
@@ -314,7 +326,7 @@ async def main():
     print(f"✅ Connected to Telegram as {me.first_name}")
 
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from search_engine import add_documents, get_max_message_id_per_channel, get_min_message_id_per_channel, rebuild_fts_index
+    from search_engine import add_documents, get_max_message_id_per_channel, get_min_message_id_per_channel, rebuild_fts_index, delete_stale_messages
 
     if args.backfill:
         print("\n📊 Backfill mode — fetching older messages...")
@@ -358,6 +370,15 @@ async def main():
     else:
         print("  (empty index — full sync)")
 
+    # Purge messages older than per-channel/per-topic retention limits
+    channels_with_limits = [ch for ch in CHANNELS if ch.get('topic_days')]
+    deleted = 0
+    if channels_with_limits:
+        print("\n🧹 Purging stale messages beyond retention limits...")
+        deleted = delete_stale_messages(channels_with_limits)
+        if deleted:
+            print(f"  Total purged: {deleted:,} rows")
+
     total_new = 0
     ch_total = len(CHANNELS)
     for ch_idx, ch_conf in enumerate(CHANNELS, 1):
@@ -373,7 +394,7 @@ async def main():
 
     await client.disconnect()
     print(f"\n🎉 Sync complete. Total new messages: {total_new}")
-    if total_new:
+    if total_new or deleted:
         rebuild_fts_index()
 
 

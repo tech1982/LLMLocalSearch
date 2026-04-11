@@ -258,6 +258,66 @@ def get_min_message_id_per_channel() -> dict[str, int]:
     return {str(k): int(v) for k, v in grouped.items() if k}
 
 
+def delete_stale_messages(channels: list[dict]) -> int:
+    """Delete messages that exceed per-channel or per-topic retention limits.
+
+    channels: list of dicts with keys:
+      name         — channel username
+      topic_days   — dict of {topic_name: days} or {"*": days} for whole channel
+    Returns total rows deleted.
+    """
+    table = get_table()
+    if table.count_rows() == 0:
+        return 0
+
+    from datetime import datetime, timedelta, timezone
+
+    total_deleted = 0
+    for ch in channels:
+        username = ch.get("name", "")
+        topic_days: dict = ch.get("topic_days", {})
+        if not topic_days:
+            continue
+
+        # Whole-channel limit: {"*": N}
+        if "*" in topic_days:
+            days = topic_days["*"]
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d %H:%M")
+            safe_uname = username.replace("'", "''")
+            try:
+                before = table.count_rows()
+                table.delete(
+                    f"channel_username = '{safe_uname}' AND date < '{cutoff}'"
+                )
+                deleted = before - table.count_rows()
+                if deleted:
+                    print(f"  🗑️  {username}: deleted {deleted:,} rows older than {days}d")
+                total_deleted += deleted
+            except Exception as e:
+                print(f"  ⚠️  Could not delete stale rows for {username}: {e}")
+        else:
+            # Per-topic limits
+            for topic_name, days in topic_days.items():
+                cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d %H:%M")
+                safe_uname = username.replace("'", "''")
+                safe_topic = topic_name.replace("'", "''").replace("%", "\\%")
+                try:
+                    before = table.count_rows()
+                    table.delete(
+                        f"channel_username = '{safe_uname}' "
+                        f"AND topic LIKE '%{safe_topic}%' "
+                        f"AND date < '{cutoff}'"
+                    )
+                    deleted = before - table.count_rows()
+                    if deleted:
+                        print(f"  🗑️  {username}/{topic_name}: deleted {deleted:,} rows older than {days}d")
+                    total_deleted += deleted
+                except Exception as e:
+                    print(f"  ⚠️  Could not delete stale rows for {username}/{topic_name}: {e}")
+
+    return total_deleted
+
+
 def list_channels() -> list[dict]:
     """All unique channels with message counts (for UI multiselect)."""
     table = get_table()
@@ -335,7 +395,6 @@ def rebuild_fts_index() -> None:
     table = get_table()
     if table.count_rows() == 0:
         return
-    compact_table()
     print(f"  Rebuilding FTS index on {table.count_rows():,} documents...")
     try:
         table.create_fts_index(
@@ -345,6 +404,9 @@ def rebuild_fts_index() -> None:
         print("  FTS index ready.")
     except Exception as e:
         print(f"  ⚠️ FTS index rebuild failed: {e}")
+    # Compact only after FTS is done — cleanup_old_versions during index build
+    # can delete fragment files that the builder is still reading.
+    compact_table()
 
 
 def search(

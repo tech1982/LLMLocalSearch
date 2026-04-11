@@ -127,17 +127,16 @@ Edit **`channels.txt`** in the project root (copy from `channels.example.txt`):
 # One channel per line. Comments and empty lines are ignored.
 
 # --- IT / Tech ---
-ITWarsawCommunity       # Simple — index everything
+mychannel           # Simple — index everything
 
 # Exclude noisy topics from a forum:
-ITWarsawCommunity | -Мемаси | -Барахолка
+mychannel | -Memes | -Marketplace
 
 # Limit specific topics to N days (e.g. job listings go stale):
-ITWarsawCommunity | -Мемаси | 180:Вакансії | 180:Пошук роботи
+mychannel | -Memes | 180:Jobs | 180:Hiring
 
 # Limit the whole channel to N days:
-djinni_official | 180:*
-doucommunity | 180:*
+newschannel | 180:*
 
 # --- Private groups (numeric ID) ---
 -1001234567890          # My private group
@@ -174,7 +173,7 @@ Every query runs two searches in parallel and merges results with **Reciprocal R
 - An exact substring bonus (+0.015) further promotes messages that literally contain the query
 
 ### Multilingual morphology
-The embedding model (`multilingual-e5-large-instruct`) natively handles Ukrainian, Russian, Polish, and English morphology. Searching for "повірка лічильника" will surface messages containing "повірці лічильника", "повірку лічильника", "перевірка лічильника" — all with >0.95 cosine similarity. No stemming config needed.
+The embedding model (`multilingual-e5-large-instruct`) natively handles multiple languages and morphological variants. Searching for a word in one form will surface messages containing related forms — all with high cosine similarity. No stemming config needed.
 
 ### Recency boost
 Recent messages are promoted in results even when an older message is slightly more semantically similar. Boost decays exponentially with a 30-day half-life:
@@ -190,35 +189,36 @@ Recent messages are promoted in results even when an older message is slightly m
 The search fetches 5× more candidates from the vector/FTS indexes, applies RRF + recency boost, then re-ranks and returns top-N (default: **30**).
 
 ### Query expansion (abbreviation/slang handling)
-Before embedding, the query is sent to Azure OpenAI to expand abbreviations and informal terms. Examples:
-- `КП` → `КП (карта побиту, karta pobytu)`
-- `ксеф` → `ксеф (KSeF, Krajowy System e-Faktur)`
-- `ZUS` → `ZUS (Zakład Ubezpieczeń Społecznych, соціальне страхування)`
-
-This makes the expanded query match documents that spell things out in full. Falls back to the original query silently if Azure OpenAI is unavailable.
+Before embedding, the query is sent to Azure OpenAI to expand abbreviations and informal terms. For example, a short abbreviation is expanded to its full form so it matches documents that spell things out. Falls back to the original query silently if Azure OpenAI is unavailable.
 
 ---
 
 ## 🖥️ Web UI
 
 **Left sidebar** — channel filters:
-- Channels grouped by category (from `channels.txt` section headers like `# --- Poland / Warsaw ---`)
+- Channels grouped by category (from `channels.txt` section headers like `# --- IT / Tech ---`)
 - Category order preserved from the file; reorderable via the right panel
 - Per-category **+/−** toggle for quick select/deselect
 - Search only triggers on **Enter** or the Search button — not on channel checkbox changes
 
 **Right panel** — admin tools (collapsed expanders):
-- **⚙️ Налаштування** — result count slider (3–50, default 30), LLM toggle, language selector
-- **📊 Статистика** — Telegram/Instagram/total document counts
-- **➕ Додати канал** — add a new channel by username; title is auto-resolved from Telegram; optional retention limit (days)
-- **🔄 Індексація** — run Telegram delta sync, backfill, or Instagram ingestion with live log output
-- **📋 Порядок категорій** — reorder sidebar category groups with ▲/▼ buttons
+- **⚙️ Settings** — result count slider (3–50, default 30), LLM toggle, language selector
+- **📊 Stats** — Telegram/Instagram/total document counts
+- **➕ Add channel** — add a new channel by username; title is auto-resolved from Telegram; optional retention limit (days)
+- **🔄 Indexing** — run Telegram delta sync, backfill, or Instagram ingestion with live log output
+- **📋 Category order** — reorder sidebar category groups with ▲/▼ buttons
 
 **AI answer:**
-- Source citations rendered as clickable date links: `[[2025-04-09]](url)` opening the message in Telegram web preview
+- Source citations rendered as clickable date links: `[[2025-04-09]](url)` opening the message in the Telegram web preview (browser, no app popup)
 - Language selector: 🇺🇦 🇬🇧 🇷🇺 🇵🇱
 
+**Result cards:**
+- Each result shows rank `#N` (matching the citation index in the AI answer), channel name, date, author, and message text
+- "Open original" link uses `t.me/s/channel/id` format — opens in browser web preview, no Telegram app popup
+
 ---
+
+> **Tip:** Indexing can also be triggered directly from the **🔄 Indexing** panel in the web UI right panel, with live log output — no terminal needed.
 
 ```bash
 # Start the app
@@ -256,4 +256,5 @@ python src/ingest_telegram.py
 
 - The embedding model is cached in `data/model_cache/` — first run downloads ~1.1 GB
 - Python dependencies live in `.venv/` — `rm -rf .venv` removes them cleanly
+- LanceDB fragments are compacted automatically after each ingestion — prevents "too many open files" errors over time
 - See [UNINSTALL.md](UNINSTALL.md) for full cleanup instructions
